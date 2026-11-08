@@ -9,7 +9,8 @@
 
 namespace tf::log {
 
-// 初始化日志：创建 %LOCALAPPDATA%\Tilefold\logs\tilefold.log
+// 初始化日志：创建 <数据根>\logs\tilefold.log
+// （开发树是 data\logs，安装版是 %LOCALAPPDATA%\Tilefold\data\logs）
 void Initialize();
 void Shutdown();
 

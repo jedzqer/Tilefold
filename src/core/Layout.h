@@ -49,7 +49,7 @@ struct Layout {
     GridState grid;  // 上次实际生效的网格（启动时还原用）
 };
 
-// %APPDATA%\Tilefold\layout.tsv
+// <数据根>\layout.tsv（开发树是 data\，安装版是 %LOCALAPPDATA%\Tilefold\data\）
 std::wstring LayoutPath();
 
 // 启动预检并持有目录锁，防止外部进程同时操作布局数据。

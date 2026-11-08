@@ -115,15 +115,16 @@ MSI 按当前用户安装到 LocalAppData，不需要管理员权限；首次启
 ```text
 <项目>\data\
 ├── box\                 分组目录（第一次启动自动创建，直接往里面放分组文件夹）
-│   ├── AI\
+│   ├── 工作\
 │   │   ├── example-app.lnk
 │   │   └── another-app.lnk
-│   ├── 开发工具\
+│   ├── 示例分组\
 │   │   └── editor.lnk
-│   └── 游戏\
+│   └── 另一个分组\
 │       └── game-launcher.lnk
 ├── layout.tsv           布局（自动生成）
 ├── layout.tsv.bak       上一份完好的布局（每次保存前轮换过来）
+├── categories.tsv       桌面快捷方式 → 分组 的映射（自动生成空模板）
 ├── layout-history\      每次启动留一份快照，最近 10 份
 └── logs\tilefold.log    运行日志（2 MB 滚动）
 ```
@@ -207,9 +208,22 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run
 | `<项目>\data\box\` | 分组目录（应用的唯一事实来源），自动创建 |
 | `<项目>\data\layout.tsv` | 布局：每个部件的格子坐标与跨度、上次生效的网格（原子写入） |
 | `<项目>\data\layout.tsv.bak` | 上一份完好布局，主文件坏了自动回退到它 |
+| `<项目>\data\categories.tsv` | 桌面快捷方式 → 分组 的映射（不搬文件；手改，首次启动自动生成空模板） |
 | `<项目>\data\layout-history\` | 每次启动的布局快照（最近 10 份），排布被弄坏时的救回手段 |
 | `<项目>\data\logs\tilefold.log` | 运行日志，2 MB 滚动 |
 | `HKCU\...\CurrentVersion\Run\Tilefold` | 开机自启登记（托盘菜单勾选/取消，路径变了下次启动自动改写） |
+
+`categories.tsv` 是“桌面上的快捷方式归到哪个大文件夹”的映射，UTF-8 TSV，制表符分隔：
+
+```text
+# 分组名<TAB>桌面文件名（含扩展名，不区分大小写）
+某个分组	某个应用.lnk
+另一个分组	另一个应用.lnk
+```
+
+- 只是**逻辑归属**，不移动任何文件：快捷方式还留在桌面，只是显示在对应的大文件夹里。
+- 分组名就是 `data\box` 下的子目录名；那个目录不存在时这一条不生效，图标退回成普通的 1×1 独立图标（不会丢）。
+- 首次启动生成的空文件里只有注释，不预置任何软件名。这张表属于每个人自己的数据，不进仓库。
 
 `layout.tsv` 是 UTF-8 TSV，手改也安全：
 

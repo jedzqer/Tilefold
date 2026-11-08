@@ -369,8 +369,11 @@ void App::BuildDesktopLayer() {
     host_ = tf::host::Find();
     tf::host::SetNativeIconsVisible(!settings_.hideNativeDesktopIcons);
     layout_ = tf::cfg::LoadLayout();
+    // 映射表放在 data\categories.tsv，不进仓库：谁的桌面归谁自己配
+    categories_ = tf::cfg::LoadCategories();
     groups_ = tf::box::ScanRoot(tf::box::DefaultRoot());
     desktopItems_ = tf::box::ScanDesktopItems();
+    MergeDesktopCategories();
     ApplySavedOrder();
     RefreshGrid();
 
@@ -424,6 +427,8 @@ void App::BuildDesktopLayer() {
     // 桌面上没被收进大文件夹的快捷方式，全部当 1×1 独立图标平铺。
     // 全新安装时 data\box 是空的，这一批就是用户看到的全部内容，不能丢。
     for (const auto& item : desktopItems_) {
+        // 已按 categories.tsv 归进大文件夹的那批不要另外铺开
+        if (HasCategoryGroup(item)) continue;
         if (tf::cfg::FindEntry(layout_, L"desktop", kDesktopGroup, item.path) != nullptr) continue;
         tf::cfg::Entry e;
         e.kind = L"desktop";
@@ -457,10 +462,11 @@ void App::BuildDesktopLayer() {
     if (layout_.entries.size() != before) dirty = true;
 
     const std::size_t beforeDesktop = layout_.entries.size();
+    // 归进大文件夹的条目在桌面层没有自己的一格，历史记录要一并清掉
     layout_.entries.erase(std::remove_if(layout_.entries.begin(), layout_.entries.end(), [this](const cfg::Entry& e) {
         if (e.kind != L"desktop") return false;
         return std::none_of(desktopItems_.begin(), desktopItems_.end(), [&](const box::Item& item) {
-            return item.path == e.item;
+            return item.path == e.item && !HasCategoryGroup(item);
         });
     }), layout_.entries.end());
     if (layout_.entries.size() != beforeDesktop) dirty = true;
@@ -479,6 +485,39 @@ const box::Group* App::FindGroup(const std::wstring& name) const {
     const auto it = std::find_if(groups_.begin(), groups_.end(),
                                  [&](const box::Group& g) { return g.name == name; });
     return it == groups_.end() ? nullptr : &*it;
+}
+
+bool App::HasCategoryGroup(const box::Item& item) const {
+    const std::wstring* group = cfg::GroupForPath(categories_, item.path);
+    if (group == nullptr) return false;
+    // 目标分组不一定还在（用户把那个大文件夹删了）：删了就当没配，
+    // 否则这个快捷方式会既不在分组里、也不在桌面上，等于凭空消失
+    return FindGroup(*group) != nullptr;
+}
+
+void App::MergeDesktopCategories() {
+    // 真桌面上的快捷方式不在 data\box 里，只是“逻辑上”归到某个分组：
+    // 按 categories.tsv 把它们塞进对应分组的 items，大文件夹里就显示出来了。
+    // 必须在扫描之后调，而且 BuildDesktopLayer / RescanGroups 都要调，
+    // 否则一次拖动之后整层重排，所有自动分类的大文件夹都会变成空的。
+    std::size_t merged = 0;
+    for (const box::Item& item : desktopItems_) {
+        if (!HasCategoryGroup(item)) continue;
+        const std::wstring* name = cfg::GroupForPath(categories_, item.path);
+        if (name == nullptr) continue;
+        auto group = std::find_if(groups_.begin(), groups_.end(),
+                                  [&](const box::Group& g) { return g.name == *name; });
+        if (group == groups_.end()) continue;
+        // 幂等：同一条已经挂过就别再挂（多挂一次大文件夹里就会重复两份）
+        const bool already = std::any_of(group->items.begin(), group->items.end(),
+                                         [&](const box::Item& it) { return it.path == item.path; });
+        if (already) continue;
+        group->items.push_back(item);
+        ++merged;
+    }
+    if (!categories_.empty()) {
+        log::Infof(L"分类映射：{} 条，本次归入分组 {} 项", categories_.size(), merged);
+    }
 }
 
 void App::OnNewBoxRequested() {
@@ -668,8 +707,10 @@ void App::PostShellVerbRescan() {
 
 void App::PruneMissingEntries() {
     // 先重扫（磁盘已经被系统动词改过了），再拿新结果对照
-    RescanGroups();
+    // 先取新的桌面列表，再重扫分组：RescanGroups 里会重挂映射，
+    // 顺序反过来的话挂的是上一轮的旧列表
     desktopItems_ = tf::box::ScanDesktopItems();
+    RescanGroups();
 
     const std::size_t before = layout_.entries.size();
     std::erase_if(layout_.entries, [&](const cfg::Entry& e) {
@@ -967,6 +1008,8 @@ widget::BigFolderWidget* App::FolderAt(POINT screenPx) const {
 
 void App::RescanGroups() {
     groups_ = tf::box::ScanRoot(tf::box::DefaultRoot());
+    // 重扫会把 groups_ 整个换掉，映射过的桌面条目就没了，必须重新挂一遍
+    MergeDesktopCategories();
     ApplySavedOrder();
     for (const tf::box::Group& g : groups_) {
         for (const box::Item& item : g.items) {

@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 
+#include "core/Categories.h"
 #include "core/Grid.h"
 #include "core/MonitorLayout.h"
 #include "core/Layout.h"
@@ -99,6 +100,10 @@ private:
     void Quit();
 
     const box::Group* FindGroup(const std::wstring& name) const;
+    // 这个桌面条目有没有配到一张还在的分组上（categories.tsv + data\box 里那个目录存在）
+    bool HasCategoryGroup(const box::Item& item) const;
+    // 把 categories.tsv 里配好的桌面条目挂到对应分组的 items 上（不搬文件）
+    void MergeDesktopCategories();
     // 这个屏幕点（物理像素）落在哪个大文件夹上（没有则 nullptr）
     widget::BigFolderWidget* FolderAt(POINT screenPx) const;
     // 这一下是不是“桌面背景”上的鼠标事件：宿主的子窗口、不在任何部件/图标上，
@@ -128,6 +133,8 @@ private:
     // 扫描结果缓存：拖出图标/改尺寸时不用重新读盘
     std::vector<box::Group> groups_;
     std::vector<box::Item> desktopItems_;
+    // data\categories.tsv 读出来的映射（桌面文件名 -> 分组名）
+    std::vector<cfg::Category> categories_;
 
     std::vector<std::unique_ptr<widget::BigFolderWidget>> folders_;
     std::vector<std::unique_ptr<widget::SingleIconWidget>> icons_;

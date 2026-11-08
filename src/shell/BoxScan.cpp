@@ -76,7 +76,7 @@ std::vector<Group> ScanRoot(const std::wstring& root) {
             Item it;
             it.path = p.wstring();
             it.isDir = child.is_directory(ec);
-            // 显示名去掉最后一级扩展名：editor.lnk -> Visual Studio Code
+            // 显示名去掉最后一级扩展名：example-app.lnk -> example-app
             it.displayName = p.stem().wstring();
             if (it.displayName.empty()) it.displayName = filename;
             g.items.push_back(std::move(it));

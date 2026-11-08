@@ -35,6 +35,7 @@ add_executable(Tilefold WIN32
     src/core/Autostart.cpp
     src/core/Settings.cpp
     src/core/SettingsWindow.cpp
+    src/core/Categories.cpp
     src/core/App.cpp
     src/render/GpuDevice.cpp
     src/render/Surface.cpp
@@ -200,4 +201,19 @@ if(BUILD_TESTING)
     set_target_properties(TilefoldGroupTests PROPERTIES
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     add_test(NAME group-folder COMMAND TilefoldGroupTests)
+
+    # data\categories.tsv 的解析/查找规则：纯字符串逻辑，但用户会手改这个文件，错一行就是一个丢图标
+    add_executable(TilefoldCategoryTests
+        tests/CategoriesTests.cpp
+        src/core/Categories.cpp
+        src/core/Log.cpp
+        src/core/Paths.cpp
+    )
+    target_include_directories(TilefoldCategoryTests PRIVATE src)
+    target_compile_definitions(TilefoldCategoryTests PRIVATE
+        UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(TilefoldCategoryTests PRIVATE /utf-8 /W4)
+    set_target_properties(TilefoldCategoryTests PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    add_test(NAME categories COMMAND TilefoldCategoryTests)
 endif()
