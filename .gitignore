@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------
+# 构建产物：CMake / MSVC / Visual Studio 生成的东西一律不入库
+# ---------------------------------------------------------------
+build/
+build-*/
+out/
+Debug/
+Release/
+x64/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+.vs/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+*.obj
+*.o
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.idb
+*.tlog
+*.iobj
+*.ipdb
+*.res
+*.user
+
+# ---------------------------------------------------------------
+# 运行期数据：分组目录、布局、日志 —— 每台机器都不一样
+# ---------------------------------------------------------------
+/data/
+
+# ---------------------------------------------------------------
+# 本地工具与缓存（开发机专用，不随仓库发布）
+# 注意：前面带 / 是锚定到仓库根，否则 widgets/ 会把 src/widgets/ 也一起忽略掉
+# ---------------------------------------------------------------
+/.cache/
+/.clangd-cache/
+/.pi/
+/.vscode/
+/.idea/
+/tools/
+/widgets/
+/shots/
+.shots/
+*.log
+
+# 开发机上的临时探针脚本：只在本机调试 UI 用，不进公开仓库
+/scripts/*-probe.ps1
+/scripts/probe-*.ps1
+/scripts/listwin.ps1
+/scripts/menu*.ps1
+/scripts/midclick-*.ps1
+
+# ---------------------------------------------------------------
+# 杂项
+# ---------------------------------------------------------------
+Thumbs.db
+desktop.ini
+*.tmp
+*.bak
+*~

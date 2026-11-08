@@ -1,0 +1,16 @@
+# 仓库内一律 LF，检出到 Windows 也保持 LF（MSVC / cl.exe 两种换行都吃，
+# 统一成一套可以避免同一文件在 diff 里整篇翻红）。
+* text=auto eol=lf
+
+# 这几类必须以 CRLF 存在：cmd/批处理、PowerShell、rc 与 manifest 对 CRLF 更稳
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf
+*.rc      text eol=crlf
+*.manifest text eol=crlf
+
+# 二进制，不要做任何换行/编码转换
+*.png     binary
+*.ico     binary
+*.jpg     binary
+*.bmp     binary

@@ -1,0 +1,26 @@
+# clangd / pi-lens 配置
+# 目的：让编辑器侧拿到和 MSVC 一致的 include 路径与标准设置。
+# 注意：如果 clangd 没有绑定 MSVC 工具链（找不到 MSVC STL 头文件），
+# 它仍可能报 std::string/wstring 相关的假错误——那种情况下以 cl.exe 的编译结果为准。
+#
+# -Isrc 故意不写：相对路径会按编译数据库的 directory（build\）解析，反而找不到 src。
+# 源码根目录由 CMake 生成的 compile_commands.json 提供（target_include_directories 里的绝对路径）。
+CompileFlags:
+  Add:
+    - -std=c++20
+    - -fms-extensions
+    - -fms-compatibility
+    - -DUNICODE
+    - -D_UNICODE
+    - -DWIN32_LEAN_AND_MEAN
+    - -DNOMINMAX
+    - -D_CRT_SECURE_NO_WARNINGS
+  Remove:
+    - /permissive-
+    - /EHsc
+    - /utf-8
+    - /Zc:__cplusplus
+    - /W4
+Diagnostics:
+  Suppress:
+    - unknown-argument

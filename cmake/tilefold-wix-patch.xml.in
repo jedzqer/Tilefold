@@ -1,0 +1,39 @@
+<CPackWiXPatch>
+  <CPackWiXFragment Id="#PRODUCT">
+    <DirectoryRef Id="TARGETDIR">
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="TilefoldProgramMenuFolder" Name="Tilefold" />
+      </Directory>
+    </DirectoryRef>
+    <DirectoryRef Id="TilefoldProgramMenuFolder">
+      <Component Id="TilefoldStartMenuShortcut" Guid="{A54C46AB-59C8-4D1F-AFF4-F889CFBA0EAF}">
+        <Shortcut Id="TilefoldStartMenuShortcutLink" Name="Tilefold" Target="[INSTALL_ROOT]@CPACK_PACKAGE_FILE_NAME@\Tilefold.exe" WorkingDirectory="INSTALL_ROOT" Advertise="no" />
+        <RemoveFolder Id="TilefoldProgramMenuFolderRemove" Directory="TilefoldProgramMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\Tilefold\Installer\Shortcuts" Name="TilefoldStartMenu" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+    <!-- 安装标记：程序靠它分辨“装出来的”和“解压出来的”。MSI 的卸载和升级都会
+         删掉安装目录，所以安装版的 data\ 要改放到 %LOCALAPPDATA%\Tilefold；
+         便携 ZIP 里没有这条注册表值，数据继续放在 exe 旁边。 -->
+    <DirectoryRef Id="INSTALL_ROOT">
+      <Component Id="TilefoldInstallMarker" Guid="{7E1B4D63-2C9A-4F58-B0E7-3D5C8A91F6D4}">
+        <RegistryValue Root="HKCU" Key="Software\Tilefold\Installer" Name="InstallLocation" Type="string" Value="[INSTALL_ROOT]" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+    <!-- 装完直接启动一下：CPack 的 WIX 模板里没有任何启动动作，不装这个用户装完
+         看不到任何反应。静默/基本 UI 安装（msiexec /qn、/qb）不启动，留给部署脚本自己控制。 -->
+    <CustomAction Id="TilefoldLaunchApp"
+                  Directory="INSTALL_ROOT"
+                  ExeCommand="[INSTALL_ROOT]@CPACK_PACKAGE_FILE_NAME@\Tilefold.exe"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="asyncNoWait" />
+    <InstallExecuteSequence>
+      <Custom Action="TilefoldLaunchApp" After="InstallFinalize">NOT Installed AND UILevel &gt;= 4</Custom>
+    </InstallExecuteSequence>
+  </CPackWiXFragment>
+  <CPackWiXFragment Id="#PRODUCTFEATURE">
+    <ComponentRef Id="TilefoldStartMenuShortcut" />
+    <ComponentRef Id="TilefoldInstallMarker" />
+  </CPackWiXFragment>
+</CPackWiXPatch>

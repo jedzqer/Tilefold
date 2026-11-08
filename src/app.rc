@@ -1,0 +1,6 @@
+#include <winuser.h>
+
+IDI_TILEFOLD ICON "tilefold.ico"
+
+// CREATEPROCESS_MANIFEST_RESOURCE_ID == 1
+1 RT_MANIFEST "app.manifest"
