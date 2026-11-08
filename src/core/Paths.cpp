@@ -149,6 +149,20 @@ std::wstring LayoutPath() { return DataDir() + L"\\layout.tsv"; }
 
 std::wstring LogDir() { return DataDir() + L"\\logs"; }
 
+const std::vector<std::wstring>& DesktopDirs() {
+    // 已知文件夹基本不会在进程生命周期内变（换桌面位置要重启 Explorer），
+    // 静态缓存足够；解析失败的那一项直接跳过，由调用方决定怎么兜底。
+    static const std::vector<std::wstring> dirs = [] {
+        std::vector<std::wstring> out;
+        for (const KNOWNFOLDERID* id : {&FOLDERID_Desktop, &FOLDERID_PublicDesktop}) {
+            std::wstring dir = KnownFolder(*id, false);
+            if (!dir.empty()) out.push_back(std::move(dir));
+        }
+        return out;
+    }();
+    return dirs;
+}
+
 bool EnsureDir(const std::wstring& dir) {
     const int r = ::SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
     return r == ERROR_SUCCESS || r == ERROR_FILE_EXISTS || r == ERROR_ALREADY_EXISTS;

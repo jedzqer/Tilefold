@@ -92,9 +92,10 @@ tf::core::App* g_app = nullptr;
 LRESULT CALLBACK WheelHookProc(int code, WPARAM wp, LPARAM lp) {
     if (code == HC_ACTION && wp == WM_MOUSEWHEEL) {
         const auto* ms = reinterpret_cast<const MSLLHOOKSTRUCT*>(lp);
-        tf::log::Infof(L"[滚轮] 钩子收到 delta={} pt=({},{}) app={}",
-                       static_cast<short>(HIWORD(ms->mouseData)), ms->pt.x, ms->pt.y,
-                       g_app != nullptr);
+        // 触控板一格能刷出几十条滚轮事件，这条只能在 debug 级开
+        tf::log::Debugf(L"[滚轮] 钩子收到 delta={} pt=({},{}) app={}",
+                        static_cast<short>(HIWORD(ms->mouseData)), ms->pt.x, ms->pt.y,
+                        g_app != nullptr);
     }
     if (code == HC_ACTION && wp == WM_MOUSEWHEEL && g_app != nullptr) {
         const auto* ms = reinterpret_cast<const MSLLHOOKSTRUCT*>(lp);

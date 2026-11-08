@@ -288,8 +288,9 @@ bool BigFolderWidget::OnWheel(float notches) {
     // 向上滚 = notches 正 = 回到上一页
     ScrollPages(-whole);
     const int target = SettledTarget();
-    tf::log::Infof(L"滚轮 [{}] notches={:.2f} -> 首条目={} 可见={} 上限={}", group_.name, notches,
-                   target, VisibleCountAt(target), MaxFirst());
+    // 每次翻页一条：滚动密集时会连着刷，降到 debug
+    tf::log::Debugf(L"滚轮 [{}] notches={:.2f} -> 首条目={} 可见={} 上限={}", group_.name, notches,
+                    target, VisibleCountAt(target), MaxFirst());
     return true;
 }
 

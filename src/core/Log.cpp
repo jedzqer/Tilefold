@@ -5,6 +5,9 @@
 
 #include <windows.h>
 
+#include <atomic>
+#include <cstddef>
+#include <cwctype>
 #include <mutex>
 #include <string>
 
@@ -13,6 +16,9 @@ namespace {
 std::mutex g_mutex;
 std::wstring g_logPath;
 bool g_ready = false;
+
+// 级别阈值：默认 Info，Initialize() 里按 TF_LOG_LEVEL 覆盖。
+std::atomic<int> g_minLevel{static_cast<int>(tf::log::Level::Info)};
 
 constexpr long long kMaxBytes = 2LL * 1024 * 1024;
 
@@ -39,6 +45,12 @@ void AppendUtf8(const std::string& utf8) {
 
 namespace tf::log {
 
+void SetLevel(Level level) { g_minLevel.store(static_cast<int>(level), std::memory_order_relaxed); }
+
+bool Enabled(Level level) {
+    return static_cast<int>(level) >= g_minLevel.load(std::memory_order_relaxed);
+}
+
 void Initialize() {
     std::lock_guard lock(g_mutex);
     if (g_ready) return;
@@ -46,6 +58,19 @@ void Initialize() {
     const std::wstring dir = tf::paths::LogDir();
     tf::paths::EnsureDir(dir);
     g_logPath = dir + L"\\tilefold.log";
+
+    // 排查时才需要逐条明细（滚轮、桌面扫描），平时让它们闭嘴：
+    // 每条日志都是一次 CreateFileW+WriteFile+CloseHandle，高频日志本身就是磁盘噪声。
+    wchar_t levelBuf[16]{};
+    if (::GetEnvironmentVariableW(L"TF_LOG_LEVEL", levelBuf,
+                                 static_cast<DWORD>(std::size(levelBuf))) > 0) {
+        std::wstring level(levelBuf);
+        for (wchar_t& c : level) c = static_cast<wchar_t>(::towlower(c));
+        if (level == L"debug") SetLevel(Level::Debug);
+        else if (level == L"warn") SetLevel(Level::Warn);
+        else if (level == L"error") SetLevel(Level::Error);
+        else SetLevel(Level::Info);
+    }
 
     // 简单滚动：超过 2MB 就把旧文件改名
     WIN32_FILE_ATTRIBUTE_DATA fad{};

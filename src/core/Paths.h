@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace tf::paths {
 
@@ -31,6 +32,11 @@ std::wstring DataDir();
 std::wstring BoxDir();
 std::wstring LayoutPath();
 std::wstring LogDir();
+
+// 桌面目录列表（用户桌面 + 公共桌面）。
+// 首次调用解析一次后缓存：SHGetKnownFolderPath 每次都要走 shell/注册表，
+// 而看门狗每 2.5s 就要扫一遍桌面，不能每轮都重新问系统。
+const std::vector<std::wstring>& DesktopDirs();
 
 // 递归建目录（SHCreateDirectoryExW）；已存在也算成功
 bool EnsureDir(const std::wstring& dir);
