@@ -27,16 +27,18 @@ HWND FindDefView(HWND host);
 // 就是真的空的，可以放心接管双击、右键这些手势。
 bool IconAtPoint(HWND defView, POINT screenPx);
 
-// 原生桌面图标列表（SysListView32）在不在、可不可见。
-// 设置里关掉“显示桌面图标”之后这个列表变成不可见，Explorer 的桌面右键菜单
-// （刷新/新建/显示设置…）也跟着没了 —— 这时才轮到我们接管桌面背景右键。
-// 注意：SHELLDLL_DefView 自己仍然是 visible 的，所以不能拿它做判据。
-bool NativeListVisible(HWND defView);
-
 std::wstring ClassName(HWND hwnd);
 
 // 判断宿主是否仍然有效（Explorer 重启后旧 HWND 会失效）
 bool IsHostAlive(HWND host);
-void SetNativeIconsVisible(bool visible);
+
+// 把原生桌面图标层（SHELLDLL_DefView）隐藏掉。Tilefold 全面接管桌面：
+// 这一层在运行期间从不显示，Explorer 的原生图标、桌面右键菜单都不会再干扰我们。
+void HideNativeIcons();
+
+// 退出时把 DefView 恢复显示。注册表里的 HideIcons=1 不动（下次启动照样接管），
+// 只是不要让我们进程里那次 ShowWindow(SW_HIDE) 在退出后还残留着：万一
+// HideIcons 写失败（权限/组策略），桌面不至于在 Tilefold 关掉后变成空白的。
+void RestoreNativeIconsOnExit();
 
 }  // namespace tf::host

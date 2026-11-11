@@ -144,10 +144,9 @@ int RunNewBoxCommand() {
     log::Infof(L"--new-box：已创建虚拟收纳文件夹 {}", unique);
     return 0;
 }
-DesktopCommand ShowBackgroundMenu(HWND owner, POINT screenPt, bool nativeIconsHidden) {
+DesktopCommand ShowBackgroundMenu(HWND owner, POINT screenPt) {
     // 自有项的 id 走 0xE000 高段：系统动词占 [1, 0x6FFF]，互不干扰
     constexpr UINT kIdRefresh = 0xE001;
-    constexpr UINT kIdToggleIcons = 0xE002;
 
     // 菜单主体交给 explorer：查看 / 排序方式 / 刷新 / 粘贴 / 新建 / 显示设置 /
     // 个性化 / 属性 —— 和桌面空白处右键一模一样。我们自己那几条插在最上面。
@@ -157,14 +156,13 @@ DesktopCommand ShowBackgroundMenu(HWND owner, POINT screenPt, bool nativeIconsHi
     }
 
     // 自己的项放最上面（用户要求：先我们的，再原版的）。
-    // QueryContextMenu 只会往后追加，所以生成完再插回去：0..2 是我们的，3 是分隔线。
+    // QueryContextMenu 只会往后追加，所以生成完再插回去：0 是我们的，1 是分隔线。
     //
     // 注意：“新建收纳文件夹”不放这里。它已经通过 HKCU\...\DesktopBackground\Shell\Tilefold.NewBox
     // 注册进系统菜单了（带图标、排在原版项里），再插一条就是重复。
+    // “显示/隐藏系统桌面图标”已经彻底移除：桌面由 Tilefold 全面接管，原生图标层不会再出现。
     menu.PrependExtra(L"刷新(&E)", kIdRefresh, 0);
-    menu.PrependExtra(nativeIconsHidden ? L"显示系统桌面图标(&D)" : L"隐藏系统桌面图标(&D)",
-                      kIdToggleIcons, 1);
-    menu.PrependSeparator(2);
+    menu.PrependSeparator(1);
 
     const UINT cmd = menu.Track(screenPt);
     if (menu.IsShellCommand(cmd)) {
@@ -175,7 +173,6 @@ DesktopCommand ShowBackgroundMenu(HWND owner, POINT screenPt, bool nativeIconsHi
 
     switch (cmd) {
         case kIdRefresh: return DesktopCommand::Refresh;
-        case kIdToggleIcons: return DesktopCommand::ToggleNativeIcons;
         default: return DesktopCommand::None;
     }
 }

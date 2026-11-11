@@ -193,7 +193,9 @@ App::App(HINSTANCE instance) : instance_(instance) {}
 
 App::~App() {
     g_app = nullptr;
-    tf::host::SetNativeIconsVisible(true);
+    // 全面接管只在运行期间生效：退出把 HideIcons 写回 0，原生桌面图标回来
+    cfg::RestoreDesktopVisibility();
+    tf::host::RestoreNativeIconsOnExit();
     if (wheelHook_ != nullptr) {
         ::UnhookWindowsHookEx(wheelHook_);
         wheelHook_ = nullptr;
@@ -238,7 +240,7 @@ bool App::CreateControlWindow() {
 bool App::Initialize() {
     settings_ = cfg::LoadSettings();
     widget::paint::SetLabelColor(settings_.labelColor);
-    cfg::ApplyDesktopVisibility(settings_);
+    cfg::ApplyDesktopVisibility();
     if (!cfg::AcquireLayoutFile()) {
         ::MessageBoxW(nullptr,
                       L"无法访问或写入桌面布局目录。请检查 data 目录权限，并确认没有其他 Tilefold 实例正在运行。",
@@ -248,7 +250,7 @@ bool App::Initialize() {
     if (!tf::gpu::GpuDevice::Get().Initialize()) return false;
 
     if (!CreateControlWindow()) return false;
-    tf::host::SetNativeIconsVisible(!settings_.hideNativeDesktopIcons);
+    tf::host::HideNativeIcons();
 
     // 图标提取线程：独立 STA，避免 shell 扩展卡住 UI 线程
     tf::shell::IconStore::Get().Start();
@@ -363,7 +365,7 @@ bool App::PlaceEntry(cfg::Entry& entry, RECT boundsPx, int spanCols, int spanRow
 
 void App::BuildDesktopLayer() {
     host_ = tf::host::Find();
-    tf::host::SetNativeIconsVisible(!settings_.hideNativeDesktopIcons);
+    tf::host::HideNativeIcons();
     layout_ = tf::cfg::LoadLayout();
     // 分组和条目都来自 layout.tsv；真实桌面只用来发现未分组图标
     RebuildGroups();
@@ -1090,10 +1092,10 @@ bool App::HandleDesktopNewBoxGestureAt(POINT screenPx) {
 }
 
 bool App::HandleDesktopRightClickAt(POINT screenPx) {
-    // 为什么需要这个：设置里「隐藏系统桌面图标」= Explorer\Advanced\HideIcons=1，
-    // 它把 SHELLDLL_DefView 整个隐藏了，而桌面空白处的右键菜单正是 DefView 画的。
-    // 所以隐藏原生图标之后桌面右键什么都不弹（连系统的“刷新/显示设置”都没有），
-    // 我们注册的 DesktopBackground\Shell 项也没机会显示。这里自己弹一个。
+    // Tilefold 全面接管桌面：原生桌面图标层（SHELLDLL_DefView）一直是隐藏的，
+    // 而桌面空白处的右键菜单正是 DefView 画的 —— 它不在了，桌面右键就什么都不弹
+    // （连系统的“刷新/显示设置”都没有），我们注册的 DesktopBackground\Shell 项
+    // 也没机会显示。所以桌面背景的右键菜单一直由我们自己弹（shell/DesktopContextMenu）。
     if (!CanTakeDesktopRightClick(screenPx)) return false;
 
     menuOpen_ = true;
@@ -1108,11 +1110,8 @@ bool App::CanTakeDesktopRightClick(POINT screenPx) {
     if (shuttingDown_ || rebuilding_ || menuOpen_) return false;
     if (host_.hwnd == nullptr || !::IsWindow(host_.hwnd)) return false;
 
-    // 原生桌面图标列表可见时，右键菜单由 Explorer 提供，不要叠一层自己的。
-    // 判据必须用 SysListView32（不是 SHELLDLL_DefView）：设置里关掉“显示桌面图标”
-    // 之后 DefView 依旧 visible，只有列表被藏起来，Explorer 的桌面菜单也没了。
-    const HWND defView = tf::host::FindDefView(host_.hwnd);
-    if (defView != nullptr && tf::host::NativeListVisible(defView)) return false;
+    // 原生图标层被我们隐藏了，Explorer 不会再给桌面背景弹菜单，没得抢；
+    // 剩下只需要确认这个点是桌面背景（不是自己的部件、也不是别人的窗口）。
 
     // 桌面菜单正在弹着的时候，右键归菜单自己（不能又开一个模态循环）
     if (::GetActiveWindow() != nullptr && tf::host::ClassName(::GetActiveWindow()) == L"#32768") {
@@ -1125,7 +1124,7 @@ bool App::CanTakeDesktopRightClick(POINT screenPx) {
 void App::OnDesktopMenuRequested(POINT screenPx) {
     log::Info(L"桌面右键：开始弹菜单");
     const tf::desktop_menu::DesktopCommand cmd =
-        tf::desktop_menu::ShowBackgroundMenu(controlWnd_, screenPx, settings_.hideNativeDesktopIcons);
+        tf::desktop_menu::ShowBackgroundMenu(controlWnd_, screenPx);
     menuOpen_ = false;
     log::Infof(L"桌面右键：菜单关闭 cmd={}", static_cast<int>(cmd));
 
@@ -1140,13 +1139,6 @@ void App::OnDesktopMenuRequested(POINT screenPx) {
         case tf::desktop_menu::DesktopCommand::DesktopChanged:
             // 选的是系统动词（新建文件夹 / 粘贴 / 刷新 …）：磁盘可能变了，重扫一遍
             RestartDesktopLayer(L"桌面右键：系统动词改变了桌面");
-            break;
-        case tf::desktop_menu::DesktopCommand::ToggleNativeIcons:
-            settings_.hideNativeDesktopIcons = !settings_.hideNativeDesktopIcons;
-            cfg::SaveSettings(settings_);
-            cfg::ApplyDesktopVisibility(settings_);
-            log::Infof(L"系统桌面图标：{}", settings_.hideNativeDesktopIcons ? L"已隐藏" : L"已恢复显示");
-            RestartDesktopLayer(L"切换系统桌面图标显示");
             break;
         case tf::desktop_menu::DesktopCommand::None:
             break;
@@ -1319,8 +1311,8 @@ bool App::OpenSettings(bool firstRun) {
     return settingsWindow_.Show(controlWnd_, instance_, settings_, [this](const cfg::Settings& settings) {
         settings_ = settings;
         widget::paint::SetLabelColor(settings_.labelColor);
-        cfg::ApplyDesktopVisibility(settings_);
-        tf::host::SetNativeIconsVisible(!settings_.hideNativeDesktopIcons);
+        cfg::ApplyDesktopVisibility();
+        tf::host::HideNativeIcons();
         for (auto& folder : folders_) folder->Invalidate();
         for (auto& icon : icons_) icon->Invalidate();
         if (expanded_) expanded_->Invalidate();

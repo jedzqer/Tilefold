@@ -59,18 +59,11 @@ HWND FindDefView(HWND host) {
     return ::FindWindowExW(host, nullptr, L"SHELLDLL_DefView", nullptr);
 }
 
-bool NativeListVisible(HWND defView) {
-    if (defView == nullptr || !::IsWindow(defView)) return false;
-    const HWND list = ::FindWindowExW(defView, nullptr, L"SysListView32", nullptr);
-    if (list == nullptr || ::IsWindow(list) == FALSE) return false;
-    return ::IsWindowVisible(list) != FALSE;
-}
-
 bool IconAtPoint(HWND defView, POINT screenPx) {
     if (defView == nullptr || !::IsWindow(defView)) return false;
     const HWND list = ::FindWindowExW(defView, nullptr, L"SysListView32", nullptr);
     if (list == nullptr) return false;
-    // 列表不可见（设置里关了“显示桌面图标”）或里面根本没图标：桌面就是空的
+    // 列表不可见（原生图标层被我们隐藏了）或里面根本没图标：桌面就是空的
     if (::IsWindowVisible(list) == FALSE) return false;
     constexpr UINT kLvmFirst = 0x1000;
     constexpr UINT kLvmGetItemCount = kLvmFirst + 4;  // LVM_GETITEMCOUNT
@@ -142,8 +135,12 @@ bool IsHostAlive(HWND host) {
     return ::FindWindowExW(host, nullptr, L"SHELLDLL_DefView", nullptr) != nullptr;
 }
 
-void SetNativeIconsVisible(bool visible) {
-    ::EnumWindows(&SetNativeIconsVisibleProc, visible ? TRUE : FALSE);
+void HideNativeIcons() {
+    ::EnumWindows(&SetNativeIconsVisibleProc, FALSE);
+}
+
+void RestoreNativeIconsOnExit() {
+    ::EnumWindows(&SetNativeIconsVisibleProc, TRUE);
 }
 
 }  // namespace tf::host

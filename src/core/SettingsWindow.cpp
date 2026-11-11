@@ -19,7 +19,6 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"Tilefold.Settings";
 constexpr int kColorCombo = 1001;
-constexpr int kHideDesktopIcons = 1005;
 constexpr int kAutostart = 1007;
 
 }  // namespace
@@ -68,12 +67,10 @@ bool SettingsWindow::Show(HWND owner, HINSTANCE instance, cfg::Settings settings
     ::SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(settings_.labelColor), 0);
     ::CreateWindowExW(0, L"STATIC", L"选择适合当前桌面背景的文字颜色。",
                       WS_CHILD | WS_VISIBLE, 20, 58, 320, 44, hwnd_, reinterpret_cast<HMENU>(1003), instance_, nullptr);
-    HWND nativeIcons = ::CreateWindowExW(0, L"BUTTON", L"隐藏 Windows 原生桌面图标，由 Tilefold 显示",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX | BS_MULTILINE, 20, 146, 330, 30, hwnd_,
-        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kHideDesktopIcons)), instance_, nullptr);
-    ::SendMessageW(nativeIcons, BM_SETCHECK, settings_.hideNativeDesktopIcons ? BST_CHECKED : BST_UNCHECKED, 0);
-    ::CreateWindowExW(0, L"STATIC", L"文件和快捷方式保留在桌面原位置；Tilefold 只扫描并显示，不移动内容。",
-                      WS_CHILD | WS_VISIBLE, 20, 180, 330, 44, hwnd_,
+    ::CreateWindowExW(0, L"STATIC",
+                      L"系统桌面图标已由 Tilefold 全面接管并隐藏；文件和快捷方式仍保留在桌面原位置，"
+                      L"Tilefold 只扫描并显示，不移动内容。",
+                      WS_CHILD | WS_VISIBLE, 20, 146, 330, 44, hwnd_,
                       reinterpret_cast<HMENU>(1006), instance_, nullptr);
     HWND autostart = ::CreateWindowExW(0, L"BUTTON", L"登录 Windows 时自动启动 Tilefold",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX | BS_MULTILINE,
@@ -114,11 +111,6 @@ LRESULT CALLBACK SettingsWindow::StaticWndProc(HWND hwnd, UINT msg, WPARAM wp, L
 LRESULT SettingsWindow::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_COMMAND && LOWORD(wp) == kColorCombo && HIWORD(wp) == CBN_SELCHANGE) {
         ApplySelection();
-        return 0;
-    }
-    if (msg == WM_COMMAND && LOWORD(wp) == kHideDesktopIcons &&
-        HIWORD(wp) == BN_CLICKED) {
-        ApplyToggle(LOWORD(wp));
         return 0;
     }
     if (msg == WM_COMMAND && LOWORD(wp) == kAutostart && HIWORD(wp) == BN_CLICKED) {
@@ -226,7 +218,7 @@ void SettingsWindow::UpdateFont() {
         FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
     if (!next) return;
-    for (int id : {1001, 1002, 1003, kHideDesktopIcons, 1006, kAutostart, 1008})
+    for (int id : {1001, 1002, 1003, 1006, kAutostart, 1008})
         ::SendMessageW(::GetDlgItem(hwnd_, id), WM_SETFONT, reinterpret_cast<WPARAM>(next), TRUE);
     if (font_) ::DeleteObject(font_);
     font_ = next;
@@ -264,11 +256,9 @@ void SettingsWindow::LayoutControls() {
         const int comboTop = px(24) + labelHeight;
         const int hintTop = comboTop + px(40);
         const int hintHeight = textHeight(1003, width, 24);
-        const int iconsTop = hintTop + hintHeight + px(12);
-        const int iconsHeight = textHeight(kHideDesktopIcons, width - px(24), 30);
-        const int footerTop = iconsTop + iconsHeight + px(8);
-        const int footerHeight = textHeight(1006, width, 24);
-        const int autostartTop = footerTop + footerHeight + px(8);
+        const int footerTop = hintTop + hintHeight + px(12);
+        const int footerHeight = textHeight(1006, width, 36);
+        const int autostartTop = footerTop + footerHeight + px(12);
         const int autostartHeight = textHeight(kAutostart, width, 30);
         const int autostartHintTop = autostartTop + autostartHeight + px(4);
         const int autostartHintHeight = textHeight(1008, width, 24);
@@ -284,7 +274,6 @@ void SettingsWindow::LayoutControls() {
         ::SetWindowPos(::GetDlgItem(hwnd_, 1002), nullptr, margin, px(20) - scroll_, width, labelHeight, SWP_NOZORDER);
         ::SetWindowPos(::GetDlgItem(hwnd_, 1001), nullptr, margin, comboTop - scroll_, width, px(140), SWP_NOZORDER);
         ::SetWindowPos(::GetDlgItem(hwnd_, 1003), nullptr, margin, hintTop - scroll_, width, hintHeight, SWP_NOZORDER);
-        ::SetWindowPos(::GetDlgItem(hwnd_, kHideDesktopIcons), nullptr, margin, iconsTop - scroll_, width, iconsHeight, SWP_NOZORDER);
         ::SetWindowPos(::GetDlgItem(hwnd_, 1006), nullptr, margin, footerTop - scroll_, width, footerHeight, SWP_NOZORDER);
         ::SetWindowPos(::GetDlgItem(hwnd_, kAutostart), nullptr, margin, autostartTop - scroll_, width, autostartHeight, SWP_NOZORDER);
         ::SetWindowPos(::GetDlgItem(hwnd_, 1008), nullptr, margin, autostartHintTop - scroll_, width, autostartHintHeight, SWP_NOZORDER);
@@ -308,21 +297,18 @@ void SettingsWindow::ApplySelection() {
 }
 
 void SettingsWindow::ApplyToggle(int id) {
-    if (applying_) return;
+    if (applying_ || id != kAutostart) return;
     applying_ = true;
-    if (id == kAutostart) {
-        const bool enabled = ::SendMessageW(::GetDlgItem(hwnd_, id), BM_GETCHECK, 0, 0) == BST_CHECKED;
-        if (!(enabled ? autostart::Enable() : autostart::Disable())) {
-            ::SendMessageW(::GetDlgItem(hwnd_, id), BM_SETCHECK,
-                           enabled ? BST_UNCHECKED : BST_CHECKED, 0);
-            ::MessageBoxW(hwnd_, L"无法更新当前用户的开机启动设置。", L"Tilefold 设置",
-                          MB_OK | MB_ICONERROR);
-        }
+    const bool enabled = ::SendMessageW(::GetDlgItem(hwnd_, id), BM_GETCHECK, 0, 0) == BST_CHECKED;
+    if (!(enabled ? autostart::Enable() : autostart::Disable())) {
+        ::SendMessageW(::GetDlgItem(hwnd_, id), BM_SETCHECK,
+                       enabled ? BST_UNCHECKED : BST_CHECKED, 0);
+        ::MessageBoxW(hwnd_, L"无法更新当前用户的开机启动设置。", L"Tilefold 设置",
+                      MB_OK | MB_ICONERROR);
         applying_ = false;
         return;
     }
-    if (id == kHideDesktopIcons)
-        settings_.hideNativeDesktopIcons = ::SendMessageW(::GetDlgItem(hwnd_, id), BM_GETCHECK, 0, 0) == BST_CHECKED;
+    // 在本窗口里动过任何设置，就不再弹首次启动的欢迎版标题
     settings_.onboardingComplete = true;
     if (cfg::SaveSettings(settings_) && changed_) changed_(settings_);
     applying_ = false;
