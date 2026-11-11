@@ -6,7 +6,6 @@
 #include <memory>
 #include <vector>
 
-#include "core/Categories.h"
 #include "core/Grid.h"
 #include "core/MonitorLayout.h"
 #include "core/Layout.h"
@@ -63,30 +62,27 @@ private:
     void OnItemDragOut(widget::BigFolderWidget* folder, std::size_t index, POINT dropPx);
     // 右键菜单「删除文件夹」：widget 只能发请求（不能在它自己的窗口过程栈里被销毁）
     void OnFolderDeleteRequested(widget::BigFolderWidget* folder);
-    // 真正干活：把图标撕回桌面目录、删掉空目录、清掉布局记录、重扫
+    // 真正干活：删除虚拟分组记录；文件保持不动，分组内条目回到桌面层
     void OnFolderDeleteConfirmed();
     // 点小文件夹的空处 / “更多”格 -> 放大成居中面板
     void OnFolderExpand(widget::BigFolderWidget* folder);
     void CloseExpandedFolder();
-    // 面板里拖动排序松手：order 是整组的新顺序（displayName）
+    // 面板里拖动排序松手：order 是整组的新顺序（完整路径）
     void OnExpandedReordered(const std::wstring& group, std::vector<std::wstring> order);
-    // 把 layout.tsv 里记的顺序套到扫描结果上（磁盘顺序不能改，所以顺序只能自己记）
-    void ApplySavedOrder();
+    // 按 layout.tsv 的虚拟分组和条目重建运行时缓存
+    void RebuildGroups();
     void OnIconMoved(widget::SingleIconWidget* icon);
     void OnDesktopIconMoved(widget::SingleIconWidget* icon);
     void OnShellIconMoved(widget::SingleIconWidget* icon);
     void OnIconReturn(widget::SingleIconWidget* icon);
     void RelayoutAll();
-    // 桌面右键菜单「新建收纳文件夹」：弹输入框、建目录、重扫桌面层
+    // 桌面右键菜单「新建收纳文件夹」：弹输入框、建虚拟分组、重扫桌面层
     void OnNewBoxRequested();
     // 桌面空白处右键：真弹菜单（钩子只投递请求，见 kDesktopMenuMsg）
     void OnDesktopMenuRequested(POINT screenPx);
-    // 拖到文件夹上松手要把图标收回去，所以可能需要重新读盘
+    // 按 layout.tsv 重建分组缓存
     void RescanGroups();
     bool MoveIconIntoGroup(const std::wstring& srcPath, const std::wstring& groupName);
-    // 新搬进分组的图标默认排到末尾：把“该组当前显示顺序 + 新条目”整份写成 order 记录，
-    // 不然它会跟磁盘名字排序、其他未记录条目抢位置，看起来像“随机插在中间”
-    void PutItemAtEndOfOrder(const std::wstring& groupName, const std::wstring& itemName);
     void PostRelayout();
     // 右键菜单里选了系统动词：磁盘可能已经变了（删了/改名了/剪切走了/新建了），
     // 投递到消息循环里再重扫。不能直接重建 —— 现在还在弹菜单那个 widget 的
@@ -95,15 +91,15 @@ private:
     // 重扫磁盘，并把 layout.tsv 里指向已经不存在的东西的记录清理掉。
     // 不清理的话：右键菜单里“删除”了一个图标，它在网格里那格就永远空着（空洞）。
     void PruneMissingEntries();
+    // 分组条目指向的是完整路径（可能根本不在桌面目录里，例如
+    // C:\Program Files\Foo\foo.exe）：卸载软件时桌面毫无变化，扫桌面永远发现不了，
+    // 看门狗得自己数一下有几个已经 stat 不到了。远程路径不算（SMB 掉线会卡住 UI 线程）。
+    std::size_t CountVanishedGroupItems() const;
     // 托盘菜单
     bool OpenSettings(bool firstRun = false);
     void Quit();
 
     const box::Group* FindGroup(const std::wstring& name) const;
-    // 这个桌面条目有没有配到一张还在的分组上（categories.tsv + data\box 里那个目录存在）
-    bool HasCategoryGroup(const box::Item& item) const;
-    // 把 categories.tsv 里配好的桌面条目挂到对应分组的 items 上（不搬文件）
-    void MergeDesktopCategories();
     // 这个屏幕点（物理像素）落在哪个大文件夹上（没有则 nullptr）
     widget::BigFolderWidget* FolderAt(POINT screenPx) const;
     // 这一下是不是“桌面背景”上的鼠标事件：宿主的子窗口、不在任何部件/图标上，
@@ -122,6 +118,8 @@ private:
     bool menuOpen_ = false;
     // 待删除的分组名（kDeleteGroupMsg 投递时携带），在消息循环里才真删
     std::wstring pendingDeleteGroup_;
+    // 看门狗计数：分组条目的“文件是不是还在”不是每次都查，见 kVanishedCheckEveryTicks
+    int watchdogTicks_ = 0;
 
     tf::host::HostInfo host_;
     tf::grid::Spec grid_{};
@@ -133,8 +131,7 @@ private:
     // 扫描结果缓存：拖出图标/改尺寸时不用重新读盘
     std::vector<box::Group> groups_;
     std::vector<box::Item> desktopItems_;
-    // data\categories.tsv 读出来的映射（桌面文件名 -> 分组名）
-    std::vector<cfg::Category> categories_;
+
 
     std::vector<std::unique_ptr<widget::BigFolderWidget>> folders_;
     std::vector<std::unique_ptr<widget::SingleIconWidget>> icons_;

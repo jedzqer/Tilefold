@@ -17,7 +17,7 @@ constexpr UINT kCmdSettings = 1001;
 constexpr UINT kCmdExit = 1002;
 constexpr UINT kCmdAutostart = 1003;
 constexpr UINT kCmdNewBox = 1004;
-constexpr UINT kCmdOpenBoxRoot = 1005;
+
 
 // 程序还没有 .ico 资源：运行时画一个 2×2 圆角方块的小图标（跟大文件夹的样子呼应）
 HICON MakeTrayIcon() {
@@ -162,7 +162,6 @@ void Tray::ShowMenu() {
     HMENU menu = ::CreatePopupMenu();
     if (menu == nullptr) return;
     ::AppendMenuW(menu, MF_STRING, kCmdNewBox, L"新建收纳文件夹(&N)");
-    ::AppendMenuW(menu, MF_STRING, kCmdOpenBoxRoot, L"打开收纳文件夹(&O)");
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(menu, MF_STRING, kCmdSettings, L"打开设置");
     // 每次弹菜单现查注册表：用户可能在任务管理器里手改过启动项，缓存一份只会显示旧状态
@@ -184,7 +183,6 @@ void Tray::ShowMenu() {
     ::DestroyMenu(menu);
 
     if (cmd == kCmdNewBox && onNewBox) onNewBox();
-    if (cmd == kCmdOpenBoxRoot && onOpenBoxRoot) onOpenBoxRoot();
     if (cmd == kCmdSettings && onSettings) onSettings();
     if (cmd == kCmdAutostart) {
         if (autostartOn) {

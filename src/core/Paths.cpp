@@ -143,8 +143,6 @@ std::wstring ExePath() { return FullExePath(); }
 
 std::wstring DataDir() { return Root() + L"\\data"; }
 
-std::wstring BoxDir() { return DataDir() + L"\\box"; }
-
 std::wstring LayoutPath() { return DataDir() + L"\\layout.tsv"; }
 
 std::wstring LogDir() { return DataDir() + L"\\logs"; }

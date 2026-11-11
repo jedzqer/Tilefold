@@ -34,7 +34,6 @@ int RunNewBoxCommand();
 enum class DesktopCommand {
     None,
     NewBox,             // 新建收纳文件夹
-    OpenBoxRoot,        // 打开收纳文件夹（收纳根目录）
     Refresh,            // 重新扫盘 + 重排
     ToggleNativeIcons,  // 显示 / 隐藏系统桌面图标
     // 选了一个系统动词（新建文件夹、粘贴、刷新、显示设置…）：磁盘或设置可能变了，

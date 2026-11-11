@@ -29,7 +29,6 @@ std::wstring AppRoot();
 std::wstring ExePath();
 
 std::wstring DataDir();
-std::wstring BoxDir();
 std::wstring LayoutPath();
 std::wstring LogDir();
 

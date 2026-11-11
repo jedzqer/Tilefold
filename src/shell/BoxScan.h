@@ -13,20 +13,14 @@ struct Item {
     bool desktopSource = false;
 };
 
-// 一个分组 = 分组根目录下的一个一级子目录 = 桌面上的一个大文件夹 widget
+// 一个虚拟分组 = 桌面上的一个大文件夹 widget
 struct Group {
-    std::wstring name;  // 子目录名，同时作为布局的键
-    std::wstring dir;   // 完整路径
+    std::wstring name;  // 分组名，同时作为布局的键
     std::vector<Item> items;
 };
 
-// 扫描 root 下的一级子目录，每个子目录产出一个 Group。
-// 排序规则：快捷方式(.lnk)优先，其次按显示名不区分大小写。
-// 跳过隐藏/系统文件与以 '.' 开头的条目。
-std::vector<Group> ScanRoot(const std::wstring& root);
+// 扫描用户桌面 + 公共桌面，产出所有未隐藏的条目。
+// 排序规则：按显示名不区分大小写。
 std::vector<Item> ScanDesktopItems();
-
-// 分组根目录：默认 <项目>\data\box，可用环境变量 TF_BOX_ROOT 覆盖
-std::wstring DefaultRoot();
 
 }  // namespace tf::box

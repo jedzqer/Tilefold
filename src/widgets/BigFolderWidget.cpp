@@ -131,6 +131,24 @@ void BigFolderWidget::SetBoundsPx(const RECT& boundsPx) {
     if (window_) window_->SetBoundsPx(boundsPx);
 }
 
+void BigFolderWidget::SetSpan(int spanCols, int spanRows) {
+    const int cols = std::clamp(spanCols, 1, kMaxGridDim);
+    const int rows = std::clamp(spanRows, 1, kMaxGridDim);
+    if (cols == spanCols_ && rows == spanRows_) return;
+    spanCols_ = cols;
+    spanRows_ = rows;
+    // 一页能装的格子数变了，正在播的翻页过渡是按旧行列算出来的：
+    // 直接收尾到第一页（每个图标都能看到），停在半路会落在不存在的格子上。
+    transActive_ = false;
+    pendingFirst_ = -1;
+    wheelAccum_ = 0.0f;
+    firstItem_ = 0;
+    hoverCell_ = -1;
+    pressCell_ = -1;
+    cellAnim_.assign(static_cast<std::size_t>(rows * cols), CellAnim{});
+    Invalidate();
+}
+
 void BigFolderWidget::SetLabelBandDip(float dip) {
     labelBandDip_ = dip > 0.0f ? dip : 0.0f;
     if (window_) window_->SetBottomBandDip(labelBandDip_);

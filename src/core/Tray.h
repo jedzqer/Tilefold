@@ -24,10 +24,9 @@ public:
 
     std::function<void()> onSettings;
     std::function<void()> onExit;
-    // 托盘菜单里的「新建收纳文件夹」/「打开收纳文件夹」
+    // 托盘菜单里的「新建收纳文件夹」
     // （桌面右键菜单被系统（XAML 新菜单）挡着透传不出来，这里是更稳的入口）
     std::function<void()> onNewBox;
-    std::function<void()> onOpenBoxRoot;
     // 菜单里的「开机自启动」被点了之后回调，参数 = 点完之后的新状态
     std::function<void(bool)> onAutostartChanged;
 

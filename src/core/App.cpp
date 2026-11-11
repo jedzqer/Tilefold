@@ -7,7 +7,6 @@
 #include <filesystem>
 #include <shellapi.h>
 #include <shlobj.h>
-#include <system_error>
 #include <windowsx.h>
 
 #include "core/Autostart.h"
@@ -18,13 +17,13 @@
 #include "core/Log.h"
 #include "core/Paths.h"
 #include "core/PromptDialog.h"
+#include "core/ReservedNames.h"
 #include "core/Settings.h"
 #include "render/GpuDevice.h"
 #include "shell/BoxScan.h"
 #include "shell/DesktopContextMenu.h"
 #include "shell/GroupFolder.h"
 #include "shell/IconStore.h"
-#include "shell/Launcher.h"
 #include "widgets/FrameClock.h"
 #include "widgets/Paint.h"
 
@@ -44,17 +43,23 @@ constexpr UINT kDeleteGroupMsg = WM_APP + 5;
 // 桌面空白处单击中键：新建收纳文件夹（钩子只投递请求，弹输入框在主线程）
 constexpr UINT kNewBoxGestureMsg = WM_APP + 6;
 // 右键菜单里选了系统动词（删除/重命名/剪切/新建…）：磁盘已经变了，要重扫桌面层。
-// 同样不能在弹菜单那条调用栈上重建（正在销毁正在弹菜单的那个 widget）
-constexpr UINT kShellVerbMsg = WM_APP + 6;
+// 同样不能在弹菜单那条调用栈上重建（正在销毁正在弹菜单的那个 widget）。
+// 注意：之前这里也写成 WM_APP + 6，和 kNewBoxGestureMsg 撞了同一个值，
+// 结果“删掉一个图标”会被当成“新建收纳文件夹”——弹个输入框，磁盘却根本没重扫。
+constexpr UINT kShellVerbMsg = WM_APP + 7;
 constexpr UINT_PTR kWatchdogTimerId = 1;
 constexpr UINT_PTR kDisplayTimerId = 2;
 constexpr UINT kWatchdogIntervalMs = 2500;
+// 分组条目的 stat 比扫桌面贵（每条一次 GetFileAttributesW，路径可能在慢盘 / 网络盘上），
+// 而“软件被卸载”这种变化晚十秒发现根本无所谓：每 4 次看门狗（~10 秒）查一轮。
+constexpr int kVanishedCheckEveryTicks = 4;
 
 constexpr int kDefaultSpanCols = 3;  // 大文件夹默认占 3×3 格（9 格：8 个直接点 + 1 个“更多”）
 constexpr int kDefaultSpanRows = 3;
 constexpr wchar_t kThisPcPath[] = L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
 constexpr wchar_t kRecycleBinPath[] = L"::{645FF040-5081-101B-9F08-00AA002F954E}";
-constexpr wchar_t kDesktopGroup[] = L"__desktop_items__";
+constexpr const wchar_t* kDesktopGroup = tf::cfg::kDesktopGroup;
+constexpr const wchar_t* kShellGroup = tf::cfg::kShellGroup;
 struct ShellIconSpec { const wchar_t* key; const wchar_t* path; const wchar_t* name; };
 constexpr ShellIconSpec kShellIcons[] = {
     {L"ThisPC", kThisPcPath, L"此电脑"},
@@ -158,35 +163,27 @@ void LogLayeringDiagnostics(HWND widget, HWND host) {
     }
 }
 
-// error_code::message() 是窄字符；log/format 是宽字符，这里转一道
-std::wstring Widen(const std::string& s) { return std::wstring(s.begin(), s.end()); }
-
-// 用户真实桌面目录（不是 Tilefold 自己的 data\box）。删除收纳文件夹时图标就是挪到这里
-std::wstring DesktopDir() {
-    PWSTR raw = nullptr;
-    if (FAILED(::SHGetKnownFolderPath(FOLDERID_Desktop, KF_FLAG_DEFAULT, nullptr, &raw)) ||
-        raw == nullptr) {
-        return {};
-    }
-    std::wstring dir(raw);
-    ::CoTaskMemFree(raw);
-    return dir;
+std::wstring DisplayNameForPath(const std::wstring& path) {
+    const std::filesystem::path p(path);
+    std::wstring name = p.stem().wstring();
+    if (name.empty()) name = p.filename().wstring();
+    if (name.empty()) name = path;
+    return name;
 }
 
-// 目标目录里已有同名就不覆盖，改成“名字 (2).lnk”这样让开
-std::filesystem::path UniqueDestPath(const std::filesystem::path& dir,
-                                     const std::filesystem::path& filename) {
-    std::error_code ec;
-    std::filesystem::path candidate = dir / filename;
-    if (!std::filesystem::exists(candidate, ec)) return candidate;
+bool SamePathNoCase(const std::wstring& a, const std::wstring& b) {
+    if (a.size() != b.size()) return false;
+    return ::CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()), b.c_str(),
+                                  static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
+}
 
-    const std::wstring stem = filename.stem().wstring();
-    const std::wstring ext = filename.extension().wstring();
-    for (int n = 2; n < 1000; ++n) {
-        candidate = dir / (stem + std::format(L" ({})", n) + ext);
-        if (!std::filesystem::exists(candidate, ec)) return candidate;
-    }
-    return dir / filename;  // 实在找不到空位就原样试一次，让调用方拿到错误
+bool PathExists(const std::wstring& path) {
+    return ::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool IsDirectory(const std::wstring& path) {
+    const DWORD attrs = ::GetFileAttributesW(path.c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
 }  // namespace
@@ -280,9 +277,7 @@ bool App::Initialize() {
 
     // 运行期数据全在 <项目>\data 里：第一次启动就把 box 目录建出来，
     // 用户直接把分组文件夹丢进去即可（日志里给出完整路径，省得去找）
-    tf::paths::EnsureDir(tf::paths::BoxDir());
-    log::Infof(L"数据目录={}，分组目录={}，布局={}", tf::paths::DataDir(), tf::paths::BoxDir(),
-               tf::paths::LayoutPath());
+    log::Infof(L"数据目录={}，布局={}", tf::paths::DataDir(), tf::paths::LayoutPath());
 
     BuildDesktopLayer();
 
@@ -292,7 +287,7 @@ bool App::Initialize() {
     // 桌面右键菜单被 Win11 的 XAML 新菜单挡着透传不出来，所以“新建收纳文件夹”
     // 除了桌面背景菜单，还给两个更稳的入口：托盘菜单、桌面空白处双击/中键
     tray_.onNewBox = [this] { OnNewBoxRequested(); };
-    tray_.onOpenBoxRoot = [this] { tf::shell::LaunchPath(tf::paths::BoxDir()); };
+
     tray_.onAutostartChanged = [this](bool enabled) {
         // 只在日志里留一笔：菜单下次弹出时会重查注册表，不需要另外记状态
         log::Infof(L"托盘：开机自启动 {}", enabled ? L"已开启" : L"已关闭");
@@ -370,12 +365,9 @@ void App::BuildDesktopLayer() {
     host_ = tf::host::Find();
     tf::host::SetNativeIconsVisible(!settings_.hideNativeDesktopIcons);
     layout_ = tf::cfg::LoadLayout();
-    // 映射表放在 data\categories.tsv，不进仓库：谁的桌面归谁自己配
-    categories_ = tf::cfg::LoadCategories();
-    groups_ = tf::box::ScanRoot(tf::box::DefaultRoot());
+    // 分组和条目都来自 layout.tsv；真实桌面只用来发现未分组图标
+    RebuildGroups();
     desktopItems_ = tf::box::ScanDesktopItems();
-    MergeDesktopCategories();
-    ApplySavedOrder();
     RefreshGrid();
 
     // 图标先全部入队：工作线程按顺序提取，先到的先画
@@ -428,8 +420,8 @@ void App::BuildDesktopLayer() {
     // 桌面上没被收进大文件夹的快捷方式，全部当 1×1 独立图标平铺。
     // 全新安装时 data\box 是空的，这一批就是用户看到的全部内容，不能丢。
     for (const auto& item : desktopItems_) {
-        // 已按 categories.tsv 归进大文件夹的那批不要另外铺开
-        if (HasCategoryGroup(item)) continue;
+        // 已归进虚拟分组的那批不要另外铺开
+        if (tf::cfg::GroupForPath(layout_, item.path) != nullptr) continue;
         if (tf::cfg::FindEntry(layout_, L"desktop", kDesktopGroup, item.path) != nullptr) continue;
         tf::cfg::Entry e;
         e.kind = L"desktop";
@@ -456,7 +448,7 @@ void App::BuildDesktopLayer() {
                            if (g == nullptr) return true;
                            return std::none_of(g->items.begin(), g->items.end(),
                                                [&](const box::Item& it) {
-                                                   return it.displayName == e.item;
+                                                   return it.path == e.item;
                                                });
                        }),
         layout_.entries.end());
@@ -467,7 +459,7 @@ void App::BuildDesktopLayer() {
     layout_.entries.erase(std::remove_if(layout_.entries.begin(), layout_.entries.end(), [this](const cfg::Entry& e) {
         if (e.kind != L"desktop") return false;
         return std::none_of(desktopItems_.begin(), desktopItems_.end(), [&](const box::Item& item) {
-            return item.path == e.item && !HasCategoryGroup(item);
+            return item.path == e.item && tf::cfg::GroupForPath(layout_, item.path) == nullptr;
         });
     }), layout_.entries.end());
     if (layout_.entries.size() != beforeDesktop) dirty = true;
@@ -488,58 +480,63 @@ const box::Group* App::FindGroup(const std::wstring& name) const {
     return it == groups_.end() ? nullptr : &*it;
 }
 
-bool App::HasCategoryGroup(const box::Item& item) const {
-    const std::wstring* group = cfg::GroupForPath(categories_, item.path);
-    if (group == nullptr) return false;
-    // 目标分组不一定还在（用户把那个大文件夹删了）：删了就当没配，
-    // 否则这个快捷方式会既不在分组里、也不在桌面上，等于凭空消失
-    return FindGroup(*group) != nullptr;
-}
-
-void App::MergeDesktopCategories() {
-    // 真桌面上的快捷方式不在 data\box 里，只是“逻辑上”归到某个分组：
-    // 按 categories.tsv 把它们塞进对应分组的 items，大文件夹里就显示出来了。
-    // 必须在扫描之后调，而且 BuildDesktopLayer / RescanGroups 都要调，
-    // 否则一次拖动之后整层重排，所有自动分类的大文件夹都会变成空的。
-    std::size_t merged = 0;
-    for (const box::Item& item : desktopItems_) {
-        if (!HasCategoryGroup(item)) continue;
-        const std::wstring* name = cfg::GroupForPath(categories_, item.path);
-        if (name == nullptr) continue;
-        auto group = std::find_if(groups_.begin(), groups_.end(),
-                                  [&](const box::Group& g) { return g.name == *name; });
-        if (group == groups_.end()) continue;
-        // 幂等：同一条已经挂过就别再挂（多挂一次大文件夹里就会重复两份）
-        const bool already = std::any_of(group->items.begin(), group->items.end(),
-                                         [&](const box::Item& it) { return it.path == item.path; });
-        if (already) continue;
-        group->items.push_back(item);
-        ++merged;
+void App::RebuildGroups() {
+    groups_.clear();
+    groups_.reserve(layout_.groups.size());
+    for (const cfg::GroupState& source : layout_.groups) {
+        box::Group group;
+        group.name = source.name;
+        std::vector<cfg::GroupItem> ordered = source.items;
+        std::stable_sort(ordered.begin(), ordered.end(), [](const cfg::GroupItem& a, const cfg::GroupItem& b) {
+            if (a.order != b.order) return a.order < b.order;
+            return DisplayNameForPath(a.path) < DisplayNameForPath(b.path);
+        });
+        for (const cfg::GroupItem& sourceItem : ordered) {
+            if (!PathExists(sourceItem.path)) {
+                log::Warnf(L"分组 [{}] 的条目不存在，等待清理: {}", source.name, sourceItem.path);
+                continue;
+            }
+            box::Item item;
+            item.path = sourceItem.path;
+            item.displayName = DisplayNameForPath(sourceItem.path);
+            item.isDir = IsDirectory(sourceItem.path);
+            group.items.push_back(std::move(item));
+        }
+        groups_.push_back(std::move(group));
     }
-    if (!categories_.empty()) {
-        log::Infof(L"分类映射：{} 条，本次归入分组 {} 项", categories_.size(), merged);
-    }
+    log::Infof(L"虚拟分组缓存已重建：{} 个分组，{} 个条目", groups_.size(),
+               [&] { size_t n = 0; for (const auto& g : groups_) n += g.items.size(); return n; }());
 }
 
 void App::OnNewBoxRequested() {
-    // 重排途中不要动磁盘：BuildDesktopLayer 正在扫盘，这时候建目录会漏掉
     if (shuttingDown_ || rebuilding_) return;
 
     const auto name = tf::ui::PromptForText(controlWnd_, L"新建收纳文件夹", L"文件夹名称：",
                                             tf::box::kDefaultGroupName);
-    if (!name.has_value()) return;  // 用户取消
+    if (!name.has_value()) return;
 
-    const std::wstring created = tf::box::CreateGroupFolder(tf::box::DefaultRoot(), *name);
-    if (created.empty()) {
-        ::MessageBoxW(controlWnd_, L"创建文件夹失败，详情见 data\\logs\\tilefold.log。",
+    const std::wstring base = tf::box::SanitizeGroupName(*name);
+    auto nameExists = [&](const std::wstring& candidate) {
+        for (const cfg::GroupState& group : layout_.groups) {
+            if (SamePathNoCase(group.name, candidate)) return true;
+        }
+        return false;
+    };
+    std::wstring unique = base;
+    for (int index = 2; nameExists(unique); ++index) {
+        unique = base + std::format(L" ({})", index);
+    }
+
+    cfg::EnsureGroup(layout_, unique);
+    if (!cfg::SaveLayout(layout_)) {
+        cfg::RemoveGroup(layout_, unique);
+        ::MessageBoxW(controlWnd_, L"创建收纳文件夹失败，layout.tsv 无法写入，详情见日志。",
                       L"Tilefold", MB_OK | MB_ICONWARNING);
         return;
     }
-    log::Infof(L"新建收纳文件夹：{}", created);
-    // 重扫一遍：新目录会走到 BuildDesktopLayer 里“新分组自动分配格子”那段
+    log::Infof(L"新建虚拟收纳文件夹：[{}]", unique);
     RestartDesktopLayer(L"新建了收纳文件夹");
 }
-
 void App::RelayoutAll() {
     folders_.clear();
     icons_.clear();
@@ -565,7 +562,7 @@ void App::RelayoutAll() {
         filtered.items.erase(std::remove_if(filtered.items.begin(), filtered.items.end(),
                                             [&](const box::Item& it) {
                                                 return tf::cfg::IsExtracted(layout_, src.name,
-                                                                            it.displayName);
+                                                                            it.path);
                                             }),
                              filtered.items.end());
 
@@ -615,7 +612,7 @@ void App::RelayoutAll() {
         const box::Group* g = FindGroup(e.group);
         if (g == nullptr) continue;
         const auto it = std::find_if(g->items.begin(), g->items.end(), [&](const box::Item& item) {
-            return item.displayName == e.item;
+            return item.path == e.item;
         });
         if (it == g->items.end()) continue;
 
@@ -706,41 +703,74 @@ void App::PostShellVerbRescan() {
     }
 }
 
+// 卸载一个软件不会给我们任何通知：分组条目存的可能是 C:\Program Files\Foo\foo.exe 这种
+// 桌面目录以外的完整路径，扫桌面永远发现不了它没了吗。所以看门狗得自己 stat 一下。
+// 只数“桌面目录以外”的条目：其余的交给了 ScanDesktopItems 的差异检测，不用重复系统调用。
+std::size_t App::CountVanishedGroupItems() const {
+    std::size_t vanished = 0;
+    for (const cfg::GroupState& group : layout_.groups) {
+        for (const cfg::GroupItem& item : group.items) {
+            const std::wstring& path = item.path;
+            if (path.empty()) continue;
+            // 远程路径不查：SMB 掉线时 GetFileAttributesW 能把 UI 线程卡住几十秒，
+            // 而这段代码跑在 2.5 秒一次的定时器里
+            if (path.size() > 1 && path[0] == L'\\' && path[1] == L'\\') continue;
+            // 桌面目录里的一切归 ScanDesktopItems 的差异检测管（上面那段已经扫过了），
+            // 这里只看它看不见的：指向桌面以外的完整路径
+            const bool coveredByDesktopScan =
+                std::any_of(desktopItems_.begin(), desktopItems_.end(),
+                            [&](const box::Item& it) { return it.path == path; });
+            if (coveredByDesktopScan) continue;
+            if (!PathExists(path)) ++vanished;
+        }
+    }
+    return vanished;
+}
+
 void App::PruneMissingEntries() {
-    // 先重扫（磁盘已经被系统动词改过了），再拿新结果对照
-    // 先取新的桌面列表，再重扫分组：RescanGroups 里会重挂映射，
-    // 顺序反过来的话挂的是上一轮的旧列表
     desktopItems_ = tf::box::ScanDesktopItems();
-    RescanGroups();
+
+    std::size_t removedGroupItems = 0;
+    for (cfg::GroupState& group : layout_.groups) {
+        const std::size_t beforeItems = group.items.size();
+        std::erase_if(group.items, [](const cfg::GroupItem& item) { return !PathExists(item.path); });
+        removedGroupItems += beforeItems - group.items.size();
+    }
+    RebuildGroups();
 
     const std::size_t before = layout_.entries.size();
     std::erase_if(layout_.entries, [&](const cfg::Entry& e) {
-        if (e.kind == L"shell") return false;  // 此电脑/回收站永远在
+        if (e.kind == L"shell") return false;
         const bool groupAlive =
             e.group == kDesktopGroup ||
             std::any_of(groups_.begin(), groups_.end(),
                         [&](const box::Group& g) { return g.name == e.group; });
-        if (e.kind == L"order") return !groupAlive;
+        if (e.kind == L"order") return true;
         if (e.kind == L"folder") return !groupAlive;
         if (e.kind == L"desktop") {
-            return std::none_of(desktopItems_.begin(), desktopItems_.end(),
-                                [&](const box::Item& it) { return it.path == e.item; });
+            const bool exists = std::any_of(desktopItems_.begin(), desktopItems_.end(),
+                [&](const box::Item& it) { return it.path == e.item; });
+            return !exists || cfg::GroupForPath(layout_, e.item) != nullptr;
         }
         if (e.kind == L"icon") {
             const box::Group* g = FindGroup(e.group);
             if (g == nullptr) return true;
             return std::none_of(g->items.begin(), g->items.end(),
-                                [&](const box::Item& it) { return it.displayName == e.item; });
+                                [&](const box::Item& it) { return it.path == e.item; });
         }
         return false;
     });
 
-    if (layout_.entries.size() != before) {
+    if (layout_.entries.size() != before || removedGroupItems > 0) {
         cfg::SaveLayout(layout_);
-        log::Infof(L"右键：清理掉 {} 条指向已不存在条目的布局记录", before - layout_.entries.size());
+        if (removedGroupItems > 0) {
+            log::Infof(L"清理掉 {} 个指向已不存在文件的分组条目", removedGroupItems);
+        }
+        if (layout_.entries.size() != before) {
+            log::Infof(L"清理掉 {} 条失效布局记录", before - layout_.entries.size());
+        }
     }
 }
-
 // ---- z 序守卫 ----
 //
 // ---- 网格交互 ----
@@ -754,6 +784,8 @@ void App::OnFolderMoved(widget::BigFolderWidget* folder) {
 
     const RECT cur = folder->BoundsPx();
     PlaceEntry(*it, cur, folder->SpanCols(), folder->SpanRows());
+    // 拖拽落点可能把跨度夹小（贴边），面板得同步回记录里的真实跨度
+    folder->SetSpan(it->spanCols, it->spanRows);
     folder->SetBoundsPx(desktop::BoundsPx(desktop::ForEntry(displays_, *it), *it));
 }
 
@@ -764,7 +796,17 @@ void App::OnFolderResize(widget::BigFolderWidget* folder, int spanCols, int span
     });
     if (it == layout_.entries.end()) return;
     const RECT cur = folder->BoundsPx();
-    PlaceEntry(*it, cur, spanCols, spanRows);
+    if (!PlaceEntry(*it, cur, spanCols, spanRows)) {
+        // 周围腾不出这么大块地方（跨度没改成）：把面板同步回记录里的真实值，
+        // 免得右键菜单已经勾了新尺寸、画出来还是旧的
+        folder->SetSpan(it->spanCols, it->spanRows);
+        log::Warnf(L"调整文件夹 [{}] 到 {}×{} 失败：周围没有空位", folder->Name(), spanCols, spanRows);
+        return;
+    }
+    // 面板内部的列/行（以及右键菜单里的“当前 W×H”、下一次拖拽用的跨度）都来自
+    // SetSpan 之前那份记录：只改窗口大小会出现“窗口变大了，里面的格子还是旧的行列”，
+    // 看起来就是“改了大小不生效，得刷新一次才对”。
+    folder->SetSpan(it->spanCols, it->spanRows);
     folder->SetBoundsPx(desktop::BoundsPx(desktop::ForEntry(displays_, *it), *it));
 }
 
@@ -777,7 +819,7 @@ void App::OnItemDragOut(widget::BigFolderWidget* folder, std::size_t index, POIN
     cfg::Entry e;
     e.kind = L"icon";
     e.group = g.name;
-    e.item = item.displayName;
+    e.item = item.path;
     e.spanCols = 1;
     e.spanRows = 1;
 
@@ -790,7 +832,6 @@ void App::OnItemDragOut(widget::BigFolderWidget* folder, std::size_t index, POIN
     } else if (hit != nullptr) {
         const std::wstring toGroup = hit->Name();
         if (MoveIconIntoGroup(item.path, toGroup)) {
-            PutItemAtEndOfOrder(toGroup, item.displayName);
             log::Infof(L"图标 [{}] 从 [{}] 移到文件夹 [{}]", item.displayName, g.name, toGroup);
             RescanGroups();
             PostRelayout();
@@ -836,94 +877,51 @@ void App::OnFolderDeleteConfirmed() {
     pendingDeleteGroup_.clear();
     if (rebuilding_ || shuttingDown_ || name.empty()) return;
 
-    const box::Group* g = FindGroup(name);
-    if (g == nullptr) return;
-    // 拷一份：后面要 RescanGroups，groups_ 里的引用会悬空
-    const std::vector<box::Item> items = g->items;
-    const std::wstring groupDir = g->dir;
+    const box::Group* group = FindGroup(name);
+    if (group == nullptr) return;
+    const std::size_t itemCount = group->items.size();
 
-    const std::wstring msg =
-        std::format(L"删除收纳文件夹「{}」？\n\n里面的 {} 个图标会平铺到桌面，文件不会被删。",
-                    name, items.size());
+    const std::wstring msg = std::format(
+        L"删除收纳文件夹「{}」？\n\n分组记录会被移除，里面的 {} 个图标会回到桌面层；文件本身不会被删除。",
+        name, itemCount);
     if (::MessageBoxW(controlWnd_, msg.c_str(), L"删除文件夹",
                       MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
         log::Infof(L"删除文件夹 [{}]：用户取消", name);
         return;
     }
 
-    const std::wstring desktop = DesktopDir();
-    if (desktop.empty()) {
-        log::Error(L"删除文件夹：取不到桌面目录，放弃");
+    const cfg::Layout previous = layout_;
+    cfg::RemoveGroup(layout_, name);
+    if (!cfg::SaveLayout(layout_)) {
+        layout_ = previous;
+        ::MessageBoxW(controlWnd_, L"删除文件夹失败：layout.tsv 无法写入，详情见日志。",
+                      L"Tilefold", MB_OK | MB_ICONWARNING);
         return;
     }
 
-    // 先把里面的东西挪回真实桌面：挪不干净就不删目录，否则它们就没了
-    std::size_t moved = 0;
-    std::size_t failed = 0;
-    for (const box::Item& item : items) {
-        std::error_code ec;
-        const std::filesystem::path src(item.path);
-        const std::filesystem::path dst = UniqueDestPath(desktop, src.filename());
-        std::filesystem::rename(src, dst, ec);
-        if (ec) {
-            ++failed;
-            log::Warnf(L"删除文件夹：图标 [{}] 挪回桌面失败（{}），留在原地", item.displayName,
-                       Widen(ec.message()));
-            continue;
-        }
-        ++moved;
-    }
-
-    if (failed == 0) {
-        std::error_code ec;
-        std::filesystem::remove(groupDir, ec);
-        if (ec) {
-            log::Warnf(L"删除文件夹：目录 [{}] 删不掉（{}）", groupDir, Widen(ec.message()));
-        }
-    }
-
-    // 这个分组的布局记录（文件夹本身 + 从它拖出来的独立图标）全部作废
-    std::erase_if(layout_.entries,
-                  [&](const cfg::Entry& e) { return e.group == name; });
-    cfg::SaveLayout(layout_);
-
-    log::Infof(L"删除文件夹 [{}]：{} 个图标平铺到桌面，{} 个失败", name, moved, failed);
+    log::Infof(L"删除虚拟文件夹 [{}]：{} 个图标回到桌面层，未删除任何文件", name, itemCount);
     RestartDesktopLayer(L"删除收纳文件夹");
 }
-
 void App::OnIconMoved(widget::SingleIconWidget* icon) {
-    if (rebuilding_) return;
+    if (rebuilding_ || icon == nullptr) return;
 
     const std::wstring itemName = icon->Item().displayName;
     const std::wstring fromGroup = icon->GroupName();
     const std::wstring srcPath = icon->Item().path;
-    const bool desktopSource = std::any_of(desktopItems_.begin(), desktopItems_.end(),
-        [&](const box::Item& item) { return item.path == srcPath; });
 
-    // 先看是不是被拖到了某个大文件夹上：那就是“收回去”，不用管格子占用
     const RECT cur = icon->BoundsPx();
     const POINT center{(cur.left + cur.right) / 2, (cur.top + cur.bottom) / 2};
     if (widget::BigFolderWidget* hit = FolderAt(center); hit != nullptr) {
-        if (desktopSource) {
-            tf::cfg::RemoveEntry(layout_, L"icon", fromGroup, itemName);
-            tf::cfg::SaveLayout(layout_);
-            PostRelayout();
-            return;
-        }
         const std::wstring toGroup = hit->Name();
         if (toGroup == fromGroup) {
-            tf::cfg::RemoveEntry(layout_, L"icon", fromGroup, itemName);
+            tf::cfg::RemoveEntry(layout_, L"icon", fromGroup, srcPath);
             tf::cfg::SaveLayout(layout_);
             log::Infof(L"独立图标 [{}] 拖回文件夹 [{}]", itemName, fromGroup);
         } else if (MoveIconIntoGroup(srcPath, toGroup)) {
-            PutItemAtEndOfOrder(toGroup, itemName);
-            tf::cfg::RemoveEntry(layout_, L"icon", fromGroup, itemName);
-            tf::cfg::SaveLayout(layout_);
             log::Infof(L"独立图标 [{}] 从 [{}] 移到文件夹 [{}]", itemName, fromGroup, toGroup);
             RescanGroups();
         } else {
-            log::Warnf(L"独立图标 [{}] 挪到文件夹 [{}] 失败（可能已有同名文件），保持原位", itemName,
-                       toGroup);
+            log::Warnf(L"独立图标 [{}] 拖到文件夹 [{}] 失败，保持原位", itemName, toGroup);
             return;
         }
         PostRelayout();
@@ -931,14 +929,13 @@ void App::OnIconMoved(widget::SingleIconWidget* icon) {
     }
 
     auto it = std::find_if(layout_.entries.begin(), layout_.entries.end(), [&](const cfg::Entry& e) {
-        return e.kind == L"icon" && e.group == fromGroup && e.item == itemName;
+        return e.kind == L"icon" && e.group == fromGroup && e.item == srcPath;
     });
     if (it == layout_.entries.end()) return;
 
     PlaceEntry(*it, cur, 1, 1);
     icon->SetBoundsPx(desktop::BoundsPx(desktop::ForEntry(displays_, *it), *it));
 }
-
 void App::OnDesktopIconMoved(widget::SingleIconWidget* icon) {
     if (rebuilding_ || icon == nullptr) return;
     const std::wstring path = icon->Item().path;
@@ -950,7 +947,6 @@ void App::OnDesktopIconMoved(widget::SingleIconWidget* icon) {
     if (widget::BigFolderWidget* hit = FolderAt(center); hit != nullptr) {
         const std::wstring toGroup = hit->Name();
         if (MoveIconIntoGroup(path, toGroup)) {
-            PutItemAtEndOfOrder(toGroup, itemName);
             tf::cfg::RemoveEntry(layout_, L"desktop", kDesktopGroup, path);
             cfg::SaveLayout(layout_);
             log::Infof(L"桌面图标 [{}] 收进文件夹 [{}]", itemName, toGroup);
@@ -1008,39 +1004,32 @@ widget::BigFolderWidget* App::FolderAt(POINT screenPx) const {
 }
 
 void App::RescanGroups() {
-    groups_ = tf::box::ScanRoot(tf::box::DefaultRoot());
-    // 重扫会把 groups_ 整个换掉，映射过的桌面条目就没了，必须重新挂一遍
-    MergeDesktopCategories();
-    ApplySavedOrder();
-    for (const tf::box::Group& g : groups_) {
-        for (const box::Item& item : g.items) {
+    RebuildGroups();
+    desktopItems_ = tf::box::ScanDesktopItems();
+    for (const box::Group& group : groups_) {
+        for (const box::Item& item : group.items) {
             tf::shell::IconStore::Get().Request(item.path);
         }
     }
 }
 
 bool App::MoveIconIntoGroup(const std::wstring& srcPath, const std::wstring& groupName) {
-    const box::Group* g = FindGroup(groupName);
-    if (g == nullptr || g->dir.empty()) return false;
-
-    const std::filesystem::path src(srcPath);
-    const std::filesystem::path dst = std::filesystem::path(g->dir) / src.filename();
-
-    std::error_code ec;
-    if (!std::filesystem::exists(src, ec)) return false;
-    if (std::filesystem::exists(dst, ec)) return false;  // 目标已有同名文件，不覆盖
-    std::filesystem::rename(src, dst, ec);
-    if (ec) return false;
-
-    tf::shell::IconStore::Get().Request(dst.wstring());
+    if (cfg::FindGroup(layout_, groupName) == nullptr) return false;
+    if (!PathExists(srcPath)) return false;
+    std::wstring oldGroup;
+    if (const cfg::GroupState* current = cfg::GroupForPath(layout_, srcPath)) oldGroup = current->name;
+    if (oldGroup == groupName) return true;
+    if (!cfg::MoveGroupItem(layout_, srcPath, groupName)) return false;
+    if (!cfg::SaveLayout(layout_)) return false;
+    tf::shell::IconStore::Get().Request(srcPath);
     return true;
 }
-
 void App::OnIconReturn(widget::SingleIconWidget* icon) {
     if (rebuilding_) return;
     const std::wstring itemName = icon->Item().displayName;
+    const std::wstring itemPath = icon->Item().path;
     const std::wstring groupName = icon->GroupName();
-    tf::cfg::RemoveEntry(layout_, L"icon", groupName, itemName);
+    tf::cfg::RemoveEntry(layout_, L"icon", groupName, itemPath);
     tf::cfg::SaveLayout(layout_);
     log::Infof(L"独立图标 [{}] 放回文件夹 [{}]", itemName, groupName);
     PostRelayout();
@@ -1144,9 +1133,7 @@ void App::OnDesktopMenuRequested(POINT screenPx) {
         case tf::desktop_menu::DesktopCommand::NewBox:
             OnNewBoxRequested();
             break;
-        case tf::desktop_menu::DesktopCommand::OpenBoxRoot:
-            tf::shell::LaunchPath(tf::paths::BoxDir());
-            break;
+
         case tf::desktop_menu::DesktopCommand::Refresh:
             RestartDesktopLayer(L"右键菜单：刷新");
             break;
@@ -1200,65 +1187,11 @@ void App::CloseExpandedFolder() {
 
 void App::OnExpandedReordered(const std::wstring& group, std::vector<std::wstring> order) {
     if (order.empty()) return;
-    tf::cfg::SetOrder(layout_, group, order);
+    tf::cfg::SetGroupItemOrder(layout_, group, order);
     tf::cfg::SaveLayout(layout_);
     log::Infof(L"文件夹 [{}] 图标顺序已保存：{} 项", group, order.size());
-
-    // 小面板要用新顺序，得重建（磁盘上的顺序没动，改的只是 layout.tsv 里的 order 行）
-    ApplySavedOrder();
+    RebuildGroups();
     PostRelayout();
-}
-
-void App::PutItemAtEndOfOrder(const std::wstring& groupName, const std::wstring& itemName) {
-    // 读盘之后组里的顺序是磁盘决定的（.lnk 优先 + 名字排序），新梭进来的图标会
-    // 随机落在中间。用户预期是“新进来的放最后”，所以这里把整份显式顺序写下来：
-    // 既有项保持现在的显示顺序，新条目追加在尾部。
-    std::vector<std::wstring> names;
-    if (const box::Group* g = FindGroup(groupName); g != nullptr) {
-        names.reserve(g->items.size() + 1);
-        for (const box::Item& it : g->items) {
-            if (it.displayName != itemName) names.push_back(it.displayName);
-        }
-    }
-    names.push_back(itemName);
-    tf::cfg::SetOrder(layout_, groupName, names);
-    tf::cfg::SaveLayout(layout_);
-    log::Infof(L"文件夹 [{}] 新图标 [{}] 排到末尾（共 {} 项）", groupName, itemName, names.size());
-}
-
-void App::ApplySavedOrder() {
-    for (box::Group& g : groups_) {
-        const auto order = tf::cfg::LoadOrder(layout_, g.name);
-        if (order.empty() || g.items.size() < 2) continue;
-
-        const auto indexOf = [&order](const std::wstring& name) {
-            for (const auto& [n, idx] : order) {
-                if (n == name) return idx;
-            }
-            return -1;
-        };
-
-        // 记录过的按序号排；没记录过的（新放进去的）保持磁盘顺序排在后面
-        std::stable_sort(g.items.begin(), g.items.end(),
-                         [&](const box::Item& a, const box::Item& b) {
-                             const int ia = indexOf(a.displayName);
-                             const int ib = indexOf(b.displayName);
-                             if (ia < 0 && ib < 0) return false;
-                             if (ia < 0) return false;
-                             if (ib < 0) return true;
-                             return ia < ib;
-                         });
-        log::Infof(L"文件夹 [{}] 套用保存的顺序（{} 条记录 / {} 项）", g.name, order.size(),
-                   g.items.size());
-        {
-            std::wstring joined;
-            for (const box::Item& it : g.items) {
-                if (!joined.empty()) joined += L", ";
-                joined += it.displayName;
-            }
-            log::Infof(L"文件夹 [{}] 实际顺序：{}", g.name, joined);
-        }
-    }
 }
 
 LRESULT CALLBACK App::StaticWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -1340,7 +1273,20 @@ LRESULT App::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                     const bool changed = latestDesktopItems.size() != desktopItems_.size() ||
                         !std::equal(latestDesktopItems.begin(), latestDesktopItems.end(), desktopItems_.begin(),
                             [](const box::Item& a, const box::Item& b) { return a.path == b.path; });
-                    if (changed) RestartDesktopLayer(L"检测到 Windows 桌面内容变化");
+                    if (changed) {
+                        // 先清掉指向已不存在文件的记录（桌面文件被删了 / 被卸掉的软件），
+                        // 再重建：不清理的话 layout.tsv 里会永远留着那些条目，
+                        // 下次新分成条目时会挤出一堆空洞。
+                        PruneMissingEntries();
+                        RestartDesktopLayer(L"检测到 Windows 桌面内容变化");
+                    } else if (++watchdogTicks_ % kVanishedCheckEveryTicks == 0 &&
+                               CountVanishedGroupItems() > 0) {
+                        // 分组条目指向的是完整路径（可能根本不在桌面目录里，比如卸载了的
+                        // 软件），桌面毫无变化，也是我们自己 stat 才知道。先清掉死记录再重建，
+                        // 不然 layout.tsv 里会永远戳着这些条目。
+                        PruneMissingEntries();
+                        RestartDesktopLayer(L"检测到分组条目指向的文件已不存在");
+                    }
                 }
             }
             return 0;

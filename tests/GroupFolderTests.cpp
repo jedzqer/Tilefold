@@ -1,29 +1,19 @@
-// 「新建收纳文件夹」的命名/建目录规则：纯字符串 + 文件系统逻辑，不需要窗口和 GPU。
+// 分组名的清洗规则：纯字符串逻辑，不需要窗口和 GPU。
 // 这些规则是给用户输入兜底的（非法字符、DOS 设备名、超长、重名），错一条就是
-// 一个建不出来的目录或者一个看不见的分组，所以逐条钉住。
+// 一个奇怪的布局键或者一个看不见的分组，所以逐条钉住。
 
 #include "shell/GroupFolder.h"
 
-#include <windows.h>
-
 #include <cstdio>
-#include <filesystem>
 #include <string>
 
 namespace {
-
-namespace fs = std::filesystem;
 
 int g_failures = 0;
 
 void Check(const wchar_t* what, const std::wstring& got, const std::wstring& want) {
     if (got == want) return;
     std::printf("FAIL %ls\n  got  = [%ls]\n  want = [%ls]\n", what, got.c_str(), want.c_str());
-    ++g_failures;
-}
-
-void CheckTrue(const wchar_t* what) {
-    std::printf("FAIL %ls\n", what);
     ++g_failures;
 }
 
@@ -65,56 +55,21 @@ void TestSanitize() {
 
     // 正常名字原样保留
     Check(L"plain", SanitizeGroupName(L"AI 工具"), L"AI 工具");
-}
 
-void TestCreate() {
-    std::error_code ec;
-    const fs::path root = fs::temp_directory_path(ec) /
-        (L"tilefold-group-test-" + std::to_wstring(::GetCurrentProcessId()));
-    if (ec) {
-        CheckTrue(L"temp_directory_path failed");
-        return;
-    }
-    fs::remove_all(root, ec);
-
-    // 第一次：用默认名
-    const std::wstring first = tf::box::CreateGroupFolder(root.wstring(), tf::box::kDefaultGroupName);
-    if (first.empty() || !fs::is_directory(fs::path(first), ec)) {
-        CheckTrue(L"first CreateGroupFolder failed");
-        fs::remove_all(root, ec);
-        return;
-    }
-
-    // 第二次：同名要自动变成 "新文件夹 (2)"，不能覆盖也不能失败
-    const std::wstring second = tf::box::CreateGroupFolder(root.wstring(), tf::box::kDefaultGroupName);
-    const fs::path secondPath(second);
-    const std::wstring expected = std::wstring(tf::box::kDefaultGroupName) + L" (2)";
-    Check(L"unique name", secondPath.filename().wstring(), expected);
-
-    // 第三次 -> "新文件夹 (3)"
-    const std::wstring third = tf::box::CreateGroupFolder(root.wstring(), tf::box::kDefaultGroupName);
-    Check(L"unique name 3", fs::path(third).filename().wstring(),
-          std::wstring(tf::box::kDefaultGroupName) + L" (3)");
-
-    // 非法名字要经过 Sanitize 再落盘
-    const std::wstring dirty = tf::box::CreateGroupFolder(root.wstring(), L"a/b:c");
-    Check(L"sanitized on create", fs::path(dirty).filename().wstring(), L"abc");
-
-    // 分组根目录不存在时应该自己建出来（用户可能删过 data\box）
-    const fs::path nested = root / L"fresh" / L"deeper";
-    const std::wstring nestedCreated = tf::box::CreateGroupFolder(nested.wstring(), L"收纳");
-    if (nestedCreated.empty() || !fs::is_directory(nested, ec)) {
-        CheckTrue(L"CreateGroupFolder should create missing root");
-    }
-
-    fs::remove_all(root, ec);
+    // "system" / "__desktop_items__" 是 layout.tsv 里的系统槽位：用户用这两个名字建分组，
+    // 删分组时 RemoveGroup 会把此电脑/回收站（或未分组桌面条目）的布局一起清掉。
+    // 跟设备名一样补个下划线就彻底避开了。
+    Check(L"reserved system", SanitizeGroupName(L"system"), L"_system");
+    Check(L"reserved system case", SanitizeGroupName(L"SyStEm"), L"_SyStEm");
+    Check(L"reserved desktop slot", SanitizeGroupName(L"__desktop_items__"), L"___desktop_items__");
+    Check(L"systems is fine", SanitizeGroupName(L"systems"), L"systems");
+    Check(L"my system is fine", SanitizeGroupName(L"my system"), L"my system");
 }
 
 }  // namespace
 
 int main() {
     TestSanitize();
-    TestCreate();
     if (g_failures == 0) std::printf("GroupFolder: all checks passed\n");
     return g_failures == 0 ? 0 : 1;
 }

@@ -35,7 +35,6 @@ add_executable(Tilefold WIN32
     src/core/Autostart.cpp
     src/core/Settings.cpp
     src/core/SettingsWindow.cpp
-    src/core/Categories.cpp
     src/core/App.cpp
     src/render/GpuDevice.cpp
     src/render/Surface.cpp
@@ -187,12 +186,10 @@ if(BUILD_TESTING)
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     add_test(NAME panel-geometry COMMAND TilefoldPanelTests)
 
-    # 「新建收纳文件夹」的命名规则：纯字符串/文件系统逻辑，不需要窗口和 GPU
+    # 「新建收纳文件夹」的命名规则：纯字符串逻辑，不需要窗口和 GPU
     add_executable(TilefoldGroupTests
         tests/GroupFolderTests.cpp
         src/shell/GroupFolder.cpp
-        src/core/Log.cpp
-        src/core/Paths.cpp
     )
     target_include_directories(TilefoldGroupTests PRIVATE src)
     target_compile_definitions(TilefoldGroupTests PRIVATE
@@ -202,18 +199,19 @@ if(BUILD_TESTING)
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     add_test(NAME group-folder COMMAND TilefoldGroupTests)
 
-    # data\categories.tsv 的解析/查找规则：纯字符串逻辑，但用户会手改这个文件，错一行就是一个丢图标
-    add_executable(TilefoldCategoryTests
-        tests/CategoriesTests.cpp
-        src/core/Categories.cpp
-        src/core/Log.cpp
+    add_executable(TilefoldLayoutGroupTests
+        tests/LayoutGroupTests.cpp
+        src/core/Layout.cpp
+        src/core/Grid.cpp
         src/core/Paths.cpp
+        src/core/Log.cpp
     )
-    target_include_directories(TilefoldCategoryTests PRIVATE src)
-    target_compile_definitions(TilefoldCategoryTests PRIVATE
+    target_include_directories(TilefoldLayoutGroupTests PRIVATE src)
+    target_compile_definitions(TilefoldLayoutGroupTests PRIVATE
         UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
-    target_compile_options(TilefoldCategoryTests PRIVATE /utf-8 /W4)
-    set_target_properties(TilefoldCategoryTests PROPERTIES
+    target_compile_options(TilefoldLayoutGroupTests PRIVATE /utf-8 /W4)
+    set_target_properties(TilefoldLayoutGroupTests PROPERTIES
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    add_test(NAME categories COMMAND TilefoldCategoryTests)
+    target_link_libraries(TilefoldLayoutGroupTests PRIVATE shcore shell32 user32)
+    add_test(NAME layout-groups COMMAND TilefoldLayoutGroupTests)
 endif()

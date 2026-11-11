@@ -301,11 +301,11 @@ void ExpandedFolder::OnRightClick(float x, float y) {
     const bool onItem = index >= 0 && index < static_cast<int>(group_.items.size());
 
     // 和资源管理器里右键一模一样：点在图标上就是那个条目的一套动词（打开/剪切/
-    // 复制/删除/重命名/属性…），点在卡片空白处就是目录本身的一套（打开/新建/
-    // 粘贴/属性…）。我们自己一条都不拼。
+    // 复制/删除/重命名/属性…）。分组现在是虚拟的、没有对应的真实目录，所以
+    // 卡片空白处不再弹系统菜单。
+    if (!onItem) return;
     tf::shell::SystemMenu menu;
-    const std::wstring target = onItem ? group_.items[static_cast<std::size_t>(index)].path
-                                       : group_.dir;
+    const std::wstring target = group_.items[static_cast<std::size_t>(index)].path;
     if (!menu.BuildItem(Hwnd(), target)) {
         log::Warnf(L"放大面板右键：取不到系统菜单 path={}", target);
         return;
@@ -365,7 +365,7 @@ void ExpandedFolder::OnRelease(float /*x*/, float /*y*/) {
 
         std::vector<std::wstring> order;
         order.reserve(group_.items.size());
-        for (const box::Item& it : group_.items) order.push_back(it.displayName);
+        for (const box::Item& it : group_.items) order.push_back(it.path);
         log::Infof(L"面板里拖动排序：{} -> {}（共 {} 项）", from, insertAt, order.size());
         if (onReordered_) onReordered_(std::move(order));
     }

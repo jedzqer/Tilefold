@@ -4,10 +4,12 @@
 #include <shellapi.h>
 #include <shlobj.h>
 
+#include <format>
 #include <string>
 #include <string_view>
 
 #include "core/Ipc.h"
+#include "core/Layout.h"
 #include "core/Log.h"
 #include "core/Paths.h"
 #include "core/PromptDialog.h"
@@ -107,28 +109,45 @@ int RunNewBoxCommand() {
         return 0;
     }
 
-    // 没有主实例在跑：自己弹输入框把目录建出来，下次启动 Tilefold 就能看到。
-    // 不直接建默认名，是因为用户点的就是「新建」——名字该由他来起。
-    log::Info(L"--new-box：没有运行中的实例，就地建目录");
     const auto name = tf::ui::PromptForText(nullptr, L"新建收纳文件夹", L"文件夹名称：",
                                            tf::box::kDefaultGroupName);
-    if (!name.has_value()) return 0;  // 用户取消，不是错误
+    if (!name.has_value()) return 0;
 
-    const std::wstring created = tf::box::CreateGroupFolder(tf::box::DefaultRoot(), *name);
-    if (created.empty()) {
-        ::MessageBoxW(nullptr, L"创建文件夹失败，详情见 data\\logs\\tilefold.log。",
-                      L"Tilefold", MB_OK | MB_ICONWARNING);
+    if (!tf::cfg::AcquireLayoutFile()) {
+        ::MessageBoxW(nullptr, L"创建收纳文件夹失败：数据目录无法锁定。", L"Tilefold",
+                      MB_OK | MB_ICONWARNING);
         return 1;
     }
-    log::Infof(L"--new-box：已创建 {}", created);
+    tf::cfg::Layout layout = tf::cfg::LoadLayout();
+    const std::wstring base = tf::box::SanitizeGroupName(*name);
+    auto exists = [&](const std::wstring& candidate) {
+        for (const tf::cfg::GroupState& group : layout.groups) {
+            if (::CompareStringOrdinal(group.name.c_str(), static_cast<int>(group.name.size()),
+                                       candidate.c_str(), static_cast<int>(candidate.size()), TRUE) == CSTR_EQUAL) {
+                return true;
+            }
+        }
+        return false;
+    };
+    std::wstring unique = base;
+    for (int index = 2; exists(unique); ++index) unique = base + std::format(L" ({})", index);
+    tf::cfg::EnsureGroup(layout, unique);
+    // 只想加一行记录：不要在这里写历史快照、也不要轮换 .bak。
+    // 一个活几毫秒的进程去冲掉上一份已知 good 的备份不值当，主实例自己会保存。
+    const bool saved = tf::cfg::SaveLayout(layout, tf::cfg::Backup::Skip);
+    tf::cfg::ReleaseLayoutFile();
+    if (!saved) {
+        ::MessageBoxW(nullptr, L"创建收纳文件夹失败：layout.tsv 无法写入，详情见日志。", L"Tilefold",
+                      MB_OK | MB_ICONWARNING);
+        return 1;
+    }
+    log::Infof(L"--new-box：已创建虚拟收纳文件夹 {}", unique);
     return 0;
 }
-
 DesktopCommand ShowBackgroundMenu(HWND owner, POINT screenPt, bool nativeIconsHidden) {
     // 自有项的 id 走 0xE000 高段：系统动词占 [1, 0x6FFF]，互不干扰
-    constexpr UINT kIdOpenBox = 0xE001;
-    constexpr UINT kIdRefresh = 0xE002;
-    constexpr UINT kIdToggleIcons = 0xE003;
+    constexpr UINT kIdRefresh = 0xE001;
+    constexpr UINT kIdToggleIcons = 0xE002;
 
     // 菜单主体交给 explorer：查看 / 排序方式 / 刷新 / 粘贴 / 新建 / 显示设置 /
     // 个性化 / 属性 —— 和桌面空白处右键一模一样。我们自己那几条插在最上面。
@@ -142,11 +161,10 @@ DesktopCommand ShowBackgroundMenu(HWND owner, POINT screenPt, bool nativeIconsHi
     //
     // 注意：“新建收纳文件夹”不放这里。它已经通过 HKCU\...\DesktopBackground\Shell\Tilefold.NewBox
     // 注册进系统菜单了（带图标、排在原版项里），再插一条就是重复。
-    menu.PrependExtra(L"打开收纳文件夹(&O)", kIdOpenBox, 0);
-    menu.PrependExtra(L"刷新(&E)", kIdRefresh, 1);
+    menu.PrependExtra(L"刷新(&E)", kIdRefresh, 0);
     menu.PrependExtra(nativeIconsHidden ? L"显示系统桌面图标(&D)" : L"隐藏系统桌面图标(&D)",
-                      kIdToggleIcons, 2);
-    menu.PrependSeparator(3);
+                      kIdToggleIcons, 1);
+    menu.PrependSeparator(2);
 
     const UINT cmd = menu.Track(screenPt);
     if (menu.IsShellCommand(cmd)) {
@@ -156,7 +174,6 @@ DesktopCommand ShowBackgroundMenu(HWND owner, POINT screenPt, bool nativeIconsHi
     }
 
     switch (cmd) {
-        case kIdOpenBox: return DesktopCommand::OpenBoxRoot;
         case kIdRefresh: return DesktopCommand::Refresh;
         case kIdToggleIcons: return DesktopCommand::ToggleNativeIcons;
         default: return DesktopCommand::None;

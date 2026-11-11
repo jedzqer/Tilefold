@@ -34,7 +34,7 @@ public:
     HWND Hwnd() const;
     void Invalidate();
 
-    // 拖动排序松手后回调：按新的显示顺序给出全部条目名
+    // 拖动排序松手后回调：按新的显示顺序给出全部条目完整路径
     void SetReorderedHandler(std::function<void(std::vector<std::wstring>)> fn) {
         onReordered_ = std::move(fn);
     }

@@ -11,13 +11,13 @@ Windows 11 桌面美化工具：把桌面变成手机那样的**格子布局**�
 | 功能 | 说明 |
 | --- | --- |
 | 手机式网格 | 格子边长固定对齐 Windows 原生图标间距（约 76 DIP），列数不填就按屏幕宽度自动算 |
-| 大文件夹 | `data\box` 下每个一级子目录 = 桌面上一个半透明文件夹 |
+| 大文件夹 | `layout.tsv` 里的虚拟分组 = 桌面上一个半透明文件夹 |
 | 直接启动 | 文件夹里前 N-1 个图标**点一下就启动**，不用先打开文件夹 |
 | 「更多」格 | 装不下时最后一格不是静态 `⋯`，而是 3 个缩略图缩到 0.62 倍、±9° 错位叠放 + 剩余数量角标 |
 | 拖动吸附 | 按住文件夹空白处/标题拖动，松手自动吸附到格子 |
 | 右键改尺寸 | `大小` 子菜单：`宽度（1..6 列）` / `高度（1..6 行）` 两个子菜单，当前值打勾，另有「恢复默认 3×3」和灰显的「当前 W×H」 |
-| 拖出图标 | 把图标从文件夹里拖到桌面 → 变成一个 1×1 独立图标（并从文件夹移走） |
-| 拖回图标 | 独立图标拖回文件夹 → 收回；拖到另一个文件夹 → 快捷方式文件真的搬过去 |
+| 拖出图标 | 把图标从文件夹里拖到桌面 → 变成一个 1×1 独立图标（文件仍留在原处） |
+| 拖回图标 | 独立图标拖回文件夹 → 收回；拖到另一个文件夹 → 只改逻辑归属，不移动文件 |
 | 格子避让 | 自动寻找空位；屏幕已满时可能重叠 |
 | 真实图标 | `IShellItemImageFactory` 异步提取 96px 图标，不是 `SHGetFileInfo` 的 32px 放大 |
 | 真透明 | DirectComposition 直出，圆角外与壁纸逐像素一致（不是「画了一张假壁纸」） |
@@ -32,8 +32,8 @@ Windows 11 桌面美化工具：把桌面变成手机那样的**格子布局**�
 | 左键点「更多」格 / 空白格子 | 放大成居中面板（点卡片外或 × 关闭） |
 | 面板里按住图标拖动 | 在同一文件夹内改顺序（写进 layout.tsv，重启不重置） |
 | 按住空白处或标题拖动 | 移动文件夹，松手吸附格子 |
-| 右键文件夹 | 尺寸菜单（宽/高/恢复默认）+ `删除文件夹（图标平铺到桌面）…` |
-| 按住图标拖动 | 拖到桌面空白处 = 拖出；拖到别的文件夹 = 搬过去（新进来的排末尾）；原地松手 = 启动 |
+| 右键文件夹 | 尺寸菜单（宽/高/恢复默认）+ `删除文件夹（仅移除分组记录，文件不动）…` |
+| 按住图标拖动 | 拖到桌面空白处 = 拖出；拖到别的文件夹 = 改逻辑归属（新进来的排末尾，文件不移动）；原地松手 = 启动 |
 | 左键点 1×1 图标 | 启动 |
 | 右键 1×1 图标 | `打开` / `放回 <分组> 文件夹` |
 | 右键 此电脑 / 回收站 图标 | 资源管理器**原生**右键菜单：`管理` / `属性` / `清空回收站` / `映射网络驱动器`… 全是系统自己的动词，后面再追加一条 `打开` 和（如果适用）`放回 <分组> 文件夹` |
@@ -114,17 +114,8 @@ MSI 按当前用户安装到 LocalAppData，不需要管理员权限；首次启
 
 ```text
 <项目>\data\
-├── box\                 分组目录（第一次启动自动创建，直接往里面放分组文件夹）
-│   ├── 工作\
-│   │   ├── example-app.lnk
-│   │   └── another-app.lnk
-│   ├── 示例分组\
-│   │   └── editor.lnk
-│   └── 另一个分组\
-│       └── game-launcher.lnk
-├── layout.tsv           布局（自动生成）
+├── layout.tsv           布局 + 虚拟分组 + 分组条目（唯一保存文件）
 ├── layout.tsv.bak       上一份完好的布局（每次保存前轮换过来）
-├── categories.tsv       桌面快捷方式 → 分组 的映射（自动生成空模板）
 ├── layout-history\      每次启动留一份快照，最近 10 份
 └── logs\tilefold.log    运行日志（2 MB 滚动）
 ```
@@ -142,7 +133,7 @@ MSI 按当前用户安装到 LocalAppData，不需要管理员权限；首次启
 > 真被重置了（例如整个 `data\` 被删或换目录）：`layout-history\` 里那份快照就是最快的复原手段，
 > 拷回去重命名成 `layout.tsv` 即可。
 
-**一级子目录名 = 文件夹名**，里面的 `.lnk` / `.exe` / 目录都会成为格子里的图标。
+**分组和条目都存在 `layout.tsv` 里**；条目保存的是真实桌面文件的绝对路径，Tilefold 不复制、不移动这些文件。
 
 `data\` 整个目录在 `.gitignore` 里：你的分组内容是自己机器上的东西，不该进仓库。
 拷走整个项目目录（或单独拷 `data\`）就能带着排布走；便携版删掉解压目录就等于卸载。
@@ -155,7 +146,7 @@ MSI 安装时会写 `HKCU\Software\Tilefold\Installer\InstallLocation`（默认 
 exe 在这个目录下、或者落在 Program Files / `%LOCALAPPDATA%\Programs` 里，就算安装版，
 数据走 `%LOCALAPPDATA%\Tilefold`（卸载和升级会删安装目录，不能把布局放在里面）；
 其他位置当便携版，数据就放在 exe 旁边。
-这条推导可以用环境变量覆盖：`TF_HOME`（数据根）/ `TF_BOX_ROOT`（只改分组目录）。
+这条推导可以用环境变量覆盖：`TF_HOME`（数据根）。
 
 ### 运行
 
@@ -205,47 +196,37 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run
 
 | 路径 | 内容 |
 | --- | --- |
-| `<项目>\data\box\` | 分组目录（应用的唯一事实来源），自动创建 |
-| `<项目>\data\layout.tsv` | 布局：每个部件的格子坐标与跨度、上次生效的网格（原子写入） |
+| `<项目>\data\layout.tsv` | 唯一保存文件：每个部件的格子坐标、虚拟分组、分组条目完整路径、上次生效的网格（原子写入） |
 | `<项目>\data\layout.tsv.bak` | 上一份完好布局，主文件坏了自动回退到它 |
-| `<项目>\data\categories.tsv` | 桌面快捷方式 → 分组 的映射（不搬文件；手改，首次启动自动生成空模板） |
 | `<项目>\data\layout-history\` | 每次启动的布局快照（最近 10 份），排布被弄坏时的救回手段 |
 | `<项目>\data\logs\tilefold.log` | 运行日志，2 MB 滚动 |
 | `HKCU\...\CurrentVersion\Run\Tilefold` | 开机自启登记（托盘菜单勾选/取消，路径变了下次启动自动改写） |
 
-`categories.tsv` 是“桌面上的快捷方式归到哪个大文件夹”的映射，UTF-8 TSV，制表符分隔：
-
-```text
-# 分组名<TAB>桌面文件名（含扩展名，不区分大小写）
-某个分组	某个应用.lnk
-另一个分组	另一个应用.lnk
-```
-
-- 只是**逻辑归属**，不移动任何文件：快捷方式还留在桌面，只是显示在对应的大文件夹里。
-- 分组名就是 `data\box` 下的子目录名；那个目录不存在时这一条不生效，图标退回成普通的 1×1 独立图标（不会丢）。
-- 首次启动生成的空文件里只有注释，不预置任何软件名。这张表属于每个人自己的数据，不进仓库。
-
 `layout.tsv` 是 UTF-8 TSV，手改也安全：
 
 ```text
-# Tilefold layout v5
+# Tilefold layout v6
 # kind<TAB>group<TAB>item<TAB>col<TAB>row<TAB>spanCols<TAB>spanRows<TAB>monitor
-cols	0		0	0	0	0
-grid	19	8084	1536	816	0	0
-monitor	<显示器接口ID>	19	8084	1536	816	0
-folder	工作		0	0	3	3	<显示器接口ID>
-icon	工作	示例应用	6	0	1	1	<显示器接口ID>
-order	工作	示例应用	0	0	1	1
+cols\t0\t\t0\t0\t0\t0
+grid\t19\t8084\t1536\t816\t0\t0
+monitor\t<显示器接口ID>\t19\t8084\t1536\t816\t0
+group\t工作\t\t0\t0\t0\t0
+gitem\t工作\tC:\Users\me\Desktop\example-app.lnk\t0\t0\t1\t1
+gitem\t工作\tC:\Users\me\Desktop\another-app.lnk\t1\t0\t1\t1
+folder\t工作\t\t0\t0\t3\t3\t<显示器接口ID>
+icon\t工作\tC:\Users\me\Desktop\example-app.lnk\t6\t0\t1\t1\t<显示器接口ID>
+desktop\t__desktop_items__\tC:\Users\me\Desktop\loose.lnk\t3\t0\t1\t1\t<显示器接口ID>
+shell\tsystem\tThisPC\t9\t0\t1\t1\t<显示器接口ID>
 ```
 
-- `cols`：0 = 自动；非 0 = 手动指定列数（手改着玩才用）。
-- `grid`：兼容旧格式的主屏网格：列数、格距×100、工作区宽高（DIP），最后两个字段保留为 0。
-- `monitor`：显示器接口 ID、列数、格距×100、工作区宽高（本屏 DIP），末尾保留为 0；每屏一行。
-- `folder` / `icon` 的第八列为首选显示器 ID。旧 v2/v3/v4 文件仍可读，缺少显示器 ID 的条目迁移到主屏。
-
-- `kind = folder`：`group` 是 `data\box` 下的子目录名，`item` 留空。
-- `kind = icon`：被拖出到桌面的独立图标，`group` + `item` 指向来源。
-- `kind = order`：文件夹内图标的手排顺序（面板里拖动排序后写）。`col` = 序号，`row`/`spanCols`/`spanRows` 固定 `0/1/1`，不占格子。没有 order 行的分组按磁盘顺序（`.lnk` 优先 + 名字排序）显示。
+- `group`：虚拟分组定义；空分组也要有这一行，否则重启后分组会消失。
+- `gitem`：分组条目，`group` 是所属分组，`item` 是文件完整路径，`col` 是组内排序号。
+- `folder`：桌面上的大文件夹部件，`group` 指向虚拟分组；位置/跨度与其他部件相同。
+- `icon`：从分组拖出的独立图标，`group` + `item` 指向原条目；文件不会离开原位置。
+- `desktop`：未分组的桌面条目；`shell`：此电脑/回收站等系统图标。
+- `cols`：0 = 自动列数；非 0 = 手动指定。
+- `grid` / `monitor`：保存列数、格距和工作区尺寸，重启时还原网格。
+- 当前只读写 v6 格式；旧版（v2–v5）文件不再自动迁移，需要事先转成 v6（分组与条目写入 `layout.tsv`）。
 - 显示用布局会按屏幕范围和占位做避让；此临时调整不会自动覆盖已保存的首选位置。
 
 ---
@@ -272,8 +253,8 @@ src/
 │   └── Layer.*              玻璃卡片：圆角填充 + 内描边 + 顶部高光
 ├── shell/
 │   ├── DesktopHost.*        找桌面宿主（Progman / WorkerW）与 SHELLDLL_DefView
-│   ├── BoxScan.*            扫描分组目录（data\box）→ vector<Group>
-│   ├── GroupFolder.*        「新建收纳文件夹」的名字消毒（非法字符/DOS 设备名/超长）+ 重名编号 + 建目录
+│   ├── BoxScan.*            扫描真实桌面（用户桌面 + 公共桌面）
+│   ├── GroupFolder.*        分组名消毒（非法字符/DOS 设备名/超长），不再创建真实目录
 │   ├── DesktopContextMenu.* 桌面空白处右键菜单那一项：注册表 Install/Remove + `--new-box` 入口
 │   ├── ShellMenu.*          命名空间条目的**原生**右键菜单（IContextMenu），此电脑/回收站用
 │   ├── IconStore.*          专用 STA 线程异步提取图标，完成即回调重绘
@@ -319,8 +300,8 @@ src/
 **8. 滚轮只能走 `WH_MOUSE_LL` 低级钩子，`WM_MOUSEWHEEL` 收不到。**
 widget 带 `WS_EX_NOACTIVATE`，永远没焦点，系统的悬停滚动把 `WM_MOUSEWHEEL` 发给**有焦点**的窗口（终端就自己吃掉了）。所以 App 装 `WH_MOUSE_LL`，按 `MSLLHOOKSTRUCT->pt` 找到对应的文件夹 widget 再转发。
 
-**9. 文件夹内的图标顺序只能自己记（`layout.tsv` 的 `order` 行）。**
-`BoxScan` 的顺序完全由磁盘决定（`.lnk` 优先 + 名字排序），没法改文件名去排序。所以面板里拖动排序后写 `order<TAB>group<TAB>item<TAB>序号<TAB>0<TAB>1<TAB>1`，启动时 stable_sort 套回去；顺手把新搬进文件夹的图标追加到 order 末尾（否则它会跟磁盘名字排序混进去，看着像随机插队）。注意 `CellFreeInLayout` / `NormalizeLayout` 必须跳过非 `folder`/`icon` 的条目，否则 order 行会占格子。
+**9. 文件夹内的图标顺序记在 `layout.tsv` 的 `gitem` 行的 `col` 字段里。**
+组内顺序不再依赖磁盘：面板里拖动排序后把整组条目按新顺序重写进 `gitem`（`col` = 0..N-1），启动时按 `col` stable_sort 还原；新收进组的条目追加到末尾。`CellFreeInLayout` / `NormalizeLayout` 仍然必须只处理 `folder`/`icon` 条目，`group`/`gitem` 不占格子。
 
 **10. 屏幕位置使用物理像素，控件内部使用本地 DIP。**
 桌面 child 窗口可能继承 Explorer 宿主的 DPI，不能仅用 `GetDpiForWindow` 判断其所在屏幕缩放。
@@ -341,21 +322,20 @@ widget 带 `WS_EX_NOACTIVATE`，永远没焦点，系统的悬停滚动把 `WM_M
 写 `HKCU\Software\Classes\DesktopBackground\Shell\Tilefold.NewBox`（`Position=Top`），不需要管理员
 权限；启动时写、退出时摘，免得目录被拷走后留一个死项。点菜单拉起的是 `tilefold.exe --new-box`：
 这个分支必须在**单实例互斥体之前**分流（主实例通常正在跑），主实例在就把
-`Tilefold.NewBoxFolder` 消息投给它的控制窗口，不在就自己弹输入框把目录建出来。
-主实例收到消息后建目录 + 重扫，新分组会自动拿到一个空格子（`App::BuildDesktopLayer` 里那段）。
+`Tilefold.NewBoxFolder` 消息投给它的控制窗口，不在就自己弹输入框写一条虚拟分组。
+主实例收到消息后写 `layout.tsv` + 重扫，新分组会自动拿到一个空格子（`App::BuildDesktopLayer` 里那段）。
 
-**13. 「删除文件夹」= 拆解，不是删内容。**
-右键大文件夹 → `删除文件夹（图标平铺到桌面）…`，确认后把组内每个图标 `rename` 回真实桌面目录
-（重名自动让成 `名字 (2).lnk`），目录搬空才 `remove`，然后清掉 `layout.tsv` 里该分组的记录（文件夹条目
-+ 从它拖出去的独立图标条目）并 `RestartDesktopLayer`。搬失败的文件留在原地且**不删目录**，先保命。
-实现上要投递 `kDeleteGroupMsg = WM_APP + 5` 回消息循环再干活：这段代码会析构发起右键的那块 widget，
-在它自己的窗口过程栈里做就是踩自己的栈。
+**13. 「删除文件夹」= 只删分组记录，不动文件。**
+右键大文件夹 → `删除文件夹（仅移除分组记录，文件不动）…`，确认后从 `layout.tsv` 里删掉该分组
+（`group` + `gitem` + 文件夹条目 + 从它拖出去的独立图标条目），文件仍留在桌面上，重扫后变成
+1×1 图标。实现上同样要投递 `kDeleteGroupMsg = WM_APP + 5` 回消息循环再干活：这段代码会析构
+发起右键的那块 widget，在它自己的窗口过程栈里做就是踩自己的栈。
 
-**14. 桌面上的快捷方式不进 `data\box`，而是当 1×1 图标平铺。**
-`App::BuildDesktopLayer` 每次扫描完分组目录后都会 `ScanDesktopItems()` 扫一遍桌面（用户桌面 + 公共桌面），
-把还没被收进大文件夹的每一条写成 `kind=desktop` 的 1×1 条目（`FindFreeCell` 找空格子）。
-全新安装时 `data\box` 是空的，这批条目就是用户看到的全部内容，所以**扫描结果的去重与清理必须跟着扫描走**：
-已删除的快捷方式对应的 `desktop` 条目要一起从 `layout.tsv` 里剔除，否则会留下指向空路径的死格子。
+**14. 桌面上的快捷方式按虚拟分组归类，不是物理搬进 `data\box`。**
+`App::BuildDesktopLayer` 先按 `layout.tsv` 重建分组，再 `ScanDesktopItems()` 扫一遍桌面
+（用户桌面 + 公共桌面）：已属于某个分组的不再平铺，其余的写成 `kind=desktop` 的 1×1 条目
+（`FindFreeCell` 找空格子）。扫描结果的去重与清理必须跟着扫描和虚拟分组表走：
+已删除的快捷方式对应的 `desktop` 条目和 `gitem` 要一起剔除，否则会留下指向空路径的死格子。
 `RescanGroups` 和定时刷新也走同一条路径，别只在启动时做一次。
 
 ---
@@ -370,7 +350,6 @@ widget 带 `WS_EX_NOACTIVATE`，永远没焦点，系统的悬停滚动把 `WM_M
 | 变量 | 作用 |
 | --- | --- |
 | `TF_HOME` | 覆盖数据根目录（默认按 exe 位置推导，见上文） |
-| `TF_BOX_ROOT` | 覆盖分组目录（默认 `<项目>\data\box`） |
 | `TF_WIDGET_MODE=popup\|child` | 强制桌面 widget 走顶层 popup / 宿主 child，用于对照两种层级的差异 |
 | `TF_WIDGET_POS=x,y` | 把第一块 widget 钉在指定 DIP 坐标，截图对齐/复现位置问题用 |
 | `TF_NO_LAUNCH=1` | 只记日志、不真启动应用（不然一点就把程序拉起来，桌面被抢走，动效那几帧拍不到） |

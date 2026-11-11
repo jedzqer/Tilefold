@@ -43,6 +43,10 @@ public:
 
     int SpanCols() const { return spanCols_; }
     int SpanRows() const { return spanRows_; }
+    // 跨度真正生效（右上角“大小”改完由 App 回填）：面板内部的列/行、右键菜单里
+    // 勾选的尺寸、“当前 W×H”、下一次拖拽用的跨度全来自这两个值。
+    // 以前只改了窗口大小，所以“改完不生效，点一次刷新才对”——刷新会重建整个面板。
+    void SetSpan(int spanCols, int spanRows);
 
     void SetMovedHandler(std::function<void()> fn) { onMoved_ = std::move(fn); }
     void SetResizeHandler(std::function<void(int spanCols, int spanRows)> fn) {

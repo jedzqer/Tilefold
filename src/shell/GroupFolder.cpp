@@ -4,14 +4,10 @@
 
 #include <cwchar>
 #include <cwctype>
-#include <filesystem>
-#include <system_error>
 
-#include "core/Log.h"
+#include "core/ReservedNames.h"
 
 namespace {
-
-namespace fs = std::filesystem;
 
 constexpr wchar_t kForbidden[] = L"\\/:*?\"<>|";
 // 桌面文件夹的标题就那么宽，再长的名字只能截，没别的办法
@@ -32,11 +28,6 @@ bool IsReservedDeviceName(const std::wstring& name) {
         if (head == device) return true;
     }
     return false;
-}
-
-bool Exists(const fs::path& path) {
-    std::error_code ec;
-    return fs::exists(path, ec);
 }
 
 }  // namespace
@@ -69,38 +60,10 @@ std::wstring SanitizeGroupName(const std::wstring& desired) {
     }
     if (out.empty()) out = kDefaultGroupName;
     if (IsReservedDeviceName(out)) out.insert(out.begin(), L'_');
+    // "system" / "__desktop_items__" 在 layout.tsv 里是系统槽位（此电脑/回收站、未分组
+    // 桌面条目），分组叫这个名字会让删除分组连累它们，所以同设备名一样补个下划线。
+    if (tf::cfg::IsReservedGroupName(out)) out.insert(out.begin(), L'_');
     return out;
-}
-
-std::wstring UniqueGroupName(const std::wstring& root, const std::wstring& desired) {
-    const std::wstring base = SanitizeGroupName(desired);
-    const fs::path rootPath(root);
-    if (!Exists(rootPath / base)) return base;
-    for (int index = 2; index < 10000; ++index) {
-        std::wstring candidate = base + L" (" + std::to_wstring(index) + L")";
-        if (!Exists(rootPath / candidate)) return candidate;
-    }
-    return base + L" (" + std::to_wstring(::GetTickCount64()) + L")";
-}
-
-std::wstring CreateGroupFolder(const std::wstring& root, const std::wstring& desired) {
-    const fs::path rootPath(root);
-    std::error_code ec;
-    fs::create_directories(rootPath, ec);
-    if (ec) {
-        log::Errorf(L"新建文件夹：创建分组根目录失败 {} ({})", rootPath.wstring(),
-                    static_cast<int>(ec.value()));
-        return {};
-    }
-    const std::wstring name = UniqueGroupName(root, desired);
-    const fs::path dir = rootPath / name;
-    if (!fs::create_directory(dir, ec) || ec) {
-        log::Errorf(L"新建文件夹：创建 {} 失败 ({})", dir.wstring(),
-                    static_cast<int>(ec.value()));
-        return {};
-    }
-    log::Infof(L"新建收纳文件夹：[{}] -> {}", name, dir.wstring());
-    return dir.wstring();
 }
 
 }  // namespace tf::box

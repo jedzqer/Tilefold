@@ -9,6 +9,7 @@
 #include "core/Grid.h"
 #include "core/Log.h"
 #include "core/Paths.h"
+#include "core/ReservedNames.h"
 
 namespace {
 
@@ -229,12 +230,14 @@ Layout ParseLayoutBytes(const std::string& bytes, const std::wstring& label) {
             // 旧文件带着 v2 头：那时候 cols 是“列数=8”的固定值，
             // 现在 1×1 要跟原生图标一样大，列数必须按分辨率自动算，
             // 所以把旧文件的显式列数当作自动处理。
-            if (line.find(L"layout v2") != std::wstring::npos) {
-                fileVersion = 2;
+            if (line.find(L"layout v6") != std::wstring::npos) {
+                fileVersion = 6;
             } else if (line.find(L"layout v5") != std::wstring::npos) {
                 fileVersion = 5;
             } else if (line.find(L"layout v4") != std::wstring::npos) {
                 fileVersion = 4;
+            } else if (line.find(L"layout v2") != std::wstring::npos) {
+                fileVersion = 2;
             }
             continue;
         }
@@ -268,6 +271,36 @@ Layout ParseLayoutBytes(const std::string& bytes, const std::wstring& label) {
                     ParseInt(f[5], h) && c > 0 && pitch > 0 && w > 0 && h > 0) {
                     layout.monitors.push_back({f[1], {c, pitch / 100.0f, w, h, true}});
                 }
+                continue;
+            }
+            if (f[0] == L"group") {
+                if (f[1].empty()) continue;
+                // 手改出来的 / 老版本存下来的保留名不是分组（那是此电脑/回收站和未分组桌面
+                // 条目的槽位）：当分组读进来以后 RemoveGroup 就会把它们一起清掉，直接忽略。
+                if (IsReservedGroupName(f[1])) {
+                    log::Warnf(L"layout.tsv 第 {} 行用了保留分组名 [{}]，已忽略该 group 行", lineNo, f[1]);
+                    ++skipped;
+                    continue;
+                }
+                EnsureGroup(layout, f[1]);
+                continue;
+            }
+            if (f[0] == L"gitem") {
+                int order = 0;
+                if (f[1].empty() || f[2].empty() || !ParseInt(f[3], order)) {
+                    ++skipped;
+                    continue;
+                }
+                // 一个路径只能属于一个分组：GroupForPath() 只认第一个，同一个图标出现在
+                // 两个分组时会有一条永远是幽灵（点了没反应、也删不掉），解析时直接丢掉。
+                if (const GroupState* owner = GroupForPath(layout, f[2]);
+                    owner != nullptr && owner->name != f[1]) {
+                    log::Warnf(L"layout.tsv 第 {} 行：{} 已经属于分组 [{}]，忽略分组 [{}] 里的重复记录",
+                               lineNo, f[2], owner->name, f[1]);
+                    ++skipped;
+                    continue;
+                }
+                AddGroupItem(layout, f[1], f[2], order);
                 continue;
             }
             Entry e;
@@ -309,7 +342,7 @@ Layout LoadLayout() {
     if (ReadWholeFile(path, bytes)) {
         Layout main = ParseLayoutBytes(bytes, L"layout.tsv");
         // 有条目（或至少记着网格）就算读到了东西，直接用
-        if (!main.entries.empty() || main.grid.valid) return main;
+        if (!main.entries.empty() || !main.groups.empty() || main.grid.valid) return main;
         log::Warnf(L"布局文件里一条记录都没有，可能是上次写到一半被打断，尝试从备份恢复");
     } else {
         log::Infof(L"没有布局文件，使用默认排布: {}", path);
@@ -320,7 +353,7 @@ Layout LoadLayout() {
     std::string bakBytes;
     if (ReadWholeFile(bak, bakBytes)) {
         Layout restored = ParseLayoutBytes(bakBytes, L"layout.tsv.bak");
-        if (!restored.entries.empty() || restored.grid.valid) {
+        if (!restored.entries.empty() || !restored.groups.empty() || restored.grid.valid) {
             log::Warnf(L"已从备份恢复布局 {} 项 <- {}", restored.entries.size(), bak);
             if (!WriteWholeFileAtomic(path, bakBytes)) {
                 log::Errorf(L"备份恢复成功但写回主文件失败: {}", path);
@@ -333,11 +366,11 @@ Layout LoadLayout() {
     return Layout{};
 }
 
-void SaveLayout(const Layout& layout) {
+bool SaveLayout(const Layout& layout, Backup backup) {
     tf::paths::EnsureDir(tf::paths::DataDir());
 
     std::wstring text =
-        L"# Tilefold layout v5\n"
+        L"# Tilefold layout v6\n"
         L"# kind<TAB>group<TAB>item<TAB>col<TAB>row<TAB>spanCols<TAB>spanRows\n"
         L"# 格子坐标，不是像素：换分辨率/换显示器都不会跑出屏幕\n"
         L"# cols=0 表示自动：格子边长对齐原生图标间距，1×1 部件跟原生图标一样大\n"
@@ -353,19 +386,36 @@ void SaveLayout(const Layout& layout) {
         text += std::format(L"monitor\t{}\t{}\t{}\t{}\t{}\t0\n", m.monitor, m.grid.cols,
                             static_cast<int>(std::lround(m.grid.pitch * 100.0f)), m.grid.workW, m.grid.workH);
     }
+    for (const GroupState& g : layout.groups) {
+        text += std::format(L"group\t{}\t\t0\t0\t0\t0\n", g.name);
+        std::vector<GroupItem> items = g.items;
+        std::stable_sort(items.begin(), items.end(), [](const GroupItem& a, const GroupItem& b) {
+            return a.order < b.order;
+        });
+        for (const GroupItem& it : items) {
+            if (it.path.empty()) continue;
+            text += std::format(L"gitem\t{}\t{}\t{}\t0\t1\t1\n", g.name, it.path, it.order);
+        }
+    }
     for (const Entry& e : layout.entries) {
         text += std::format(L"{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", e.kind, e.group, e.item, e.col, e.row,
                             e.spanCols, e.spanRows, e.monitor);
     }
 
-    SnapshotOncePerSession(LayoutPath());
-    RotateBackup(LayoutPath());
+    if (backup == Backup::Rotate) {
+        SnapshotOncePerSession(LayoutPath());
+        RotateBackup(LayoutPath());
+    }
 
-    if (WriteWholeFileAtomic(LayoutPath(), ToUtf8(text))) {
-        log::Infof(L"布局已保存 {} 项", layout.entries.size());
+    const bool ok = WriteWholeFileAtomic(LayoutPath(), ToUtf8(text));
+    if (ok) {
+        size_t itemCount = 0;
+        for (const auto& g : layout.groups) itemCount += g.items.size();
+        log::Infof(L"布局已保存 {} 项，{} 个虚拟分组，{} 个分组条目", layout.entries.size(), layout.groups.size(), itemCount);
     } else {
         log::Errorf(L"布局保存失败（原文件未动）: {}", LayoutPath());
     }
+    return ok;
 }
 
 const Entry* FindEntry(const Layout& layout, std::wstring_view kind, std::wstring_view group,
@@ -400,37 +450,144 @@ bool IsExtracted(const Layout& layout, std::wstring_view group, std::wstring_vie
     return FindEntry(layout, L"icon", group, item) != nullptr;
 }
 
-std::vector<std::pair<std::wstring, int>> LoadOrder(const Layout& layout,
-                                                   std::wstring_view group) {
-    std::vector<std::pair<std::wstring, int>> out;
-    for (const Entry& e : layout.entries) {
-        if (e.kind != L"order" || e.group != group) continue;
-        out.emplace_back(e.item, e.col);
+const GroupState* FindGroup(const Layout& layout, std::wstring_view name) {
+    for (const GroupState& g : layout.groups) {
+        if (g.name == name) return &g;
     }
-    return out;
+    return nullptr;
 }
 
-void SetOrder(Layout& layout, std::wstring_view group,
-              const std::vector<std::wstring>& names) {
+GroupState* FindGroup(Layout& layout, std::wstring_view name) {
+    for (GroupState& g : layout.groups) {
+        if (g.name == name) return &g;
+    }
+    return nullptr;
+}
+
+GroupState& EnsureGroup(Layout& layout, std::wstring_view name) {
+    if (GroupState* existing = FindGroup(layout, name)) return *existing;
+    GroupState group;
+    group.name = std::wstring(name);
+    layout.groups.push_back(std::move(group));
+    return layout.groups.back();
+}
+
+bool RemoveGroup(Layout& layout, std::wstring_view name) {
+    // 保留名下面挂着的是此电脑/回收站（kind="shell"）和未分组桌面条目（kind="desktop"），
+    // 跟着分组一起删掉就是数据丢失，宁可拒绝。
+    if (IsReservedGroupName(name)) {
+        log::Warnf(L"拒绝删除保留分组名 [{}]，那里存着系统图标和未分组桌面条目的布局", name);
+        return false;
+    }
+    bool removed = false;
+    const auto it = std::find_if(layout.groups.begin(), layout.groups.end(),
+                                [&](const GroupState& g) { return g.name == name; });
+    if (it != layout.groups.end()) {
+        layout.groups.erase(it);
+        removed = true;
+    }
+    layout.entries.erase(std::remove_if(layout.entries.begin(), layout.entries.end(),
+                                       [&](const Entry& e) { return e.group == name; }),
+                        layout.entries.end());
+    return removed;
+}
+
+const GroupState* GroupForPath(const Layout& layout, std::wstring_view path) {
+    if (path.empty()) return nullptr;
+    for (const GroupState& g : layout.groups) {
+        for (const GroupItem& item : g.items) {
+            if (item.path == path) return &g;
+        }
+    }
+    return nullptr;
+}
+
+const GroupItem* FindGroupItem(const Layout& layout, std::wstring_view group,
+                               std::wstring_view path) {
+    const GroupState* g = FindGroup(layout, group);
+    if (g == nullptr) return nullptr;
+    for (const GroupItem& item : g->items) {
+        if (item.path == path) return &item;
+    }
+    return nullptr;
+}
+
+bool AddGroupItem(Layout& layout, std::wstring_view group, std::wstring_view path,
+                  int order) {
+    GroupState* g = FindGroup(layout, group);
+    if (g == nullptr || path.empty()) return false;
+    if (FindGroupItem(layout, group, path) != nullptr) return true;
+    // 全局唯一：一个路径只能属于一个分组。MoveGroupItem 走的就是“先清后加”这条路，
+    // 这里再兜一次底（解析旧文件、手改 layout.tsv、以后新调用方都不会造出两边都有记录）：
+    // 同一图标出现在两个文件夹里时，另一条永远是幽灵——点不开，也删不掉。
+    bool takenElsewhere = false;
+    for (GroupState& other : layout.groups) {
+        if (&other == g) continue;
+        const std::size_t before = other.items.size();
+        other.items.erase(std::remove_if(other.items.begin(), other.items.end(),
+                                         [&](const GroupItem& item) { return item.path == path; }),
+                          other.items.end());
+        if (other.items.size() != before) takenElsewhere = true;
+    }
+    if (takenElsewhere) {
+        // 那个分组已经不再拥有它了，留在那里的图标位置记录也没了意义（不然会重建出一个
+        // 指向非成员的格子），跟 MoveGroupItem 的清理保持一致
+        layout.entries.erase(std::remove_if(layout.entries.begin(), layout.entries.end(),
+                                            [&](const Entry& e) {
+                                                return e.kind == L"icon" && e.item == path &&
+                                                       e.group != std::wstring(group);
+                                            }),
+                             layout.entries.end());
+    }
+    if (order < 0) {
+        order = 0;
+        for (const GroupItem& item : g->items) order = (item.order >= order) ? item.order + 1 : order;
+    }
+    g->items.push_back(GroupItem{std::wstring(path), order});
+    return true;
+}
+
+bool RemoveGroupItem(Layout& layout, std::wstring_view group, std::wstring_view path) {
+    GroupState* g = FindGroup(layout, group);
+    if (g == nullptr) return false;
+    const auto it = std::find_if(g->items.begin(), g->items.end(),
+                                [&](const GroupItem& item) { return item.path == path; });
+    if (it == g->items.end()) return false;
+    g->items.erase(it);
+    return true;
+}
+
+bool MoveGroupItem(Layout& layout, std::wstring_view path, std::wstring_view toGroup) {
+    if (path.empty() || FindGroup(layout, toGroup) == nullptr) return false;
+    for (GroupState& g : layout.groups) {
+        g.items.erase(std::remove_if(g.items.begin(), g.items.end(),
+                                     [&](const GroupItem& item) { return item.path == path; }),
+                      g.items.end());
+    }
     layout.entries.erase(std::remove_if(layout.entries.begin(), layout.entries.end(),
                                        [&](const Entry& e) {
-                                           return e.kind == L"order" && e.group == group;
+                                           return e.kind == L"icon" && e.item == path;
                                        }),
                         layout.entries.end());
+    return AddGroupItem(layout, toGroup, path);
+}
 
-    // 写在最后，保持 layout.tsv 里“先位置、后顺序”的阅读顺序
-    int index = 0;
-    for (const std::wstring& name : names) {
-        Entry e;
-        e.kind = L"order";
-        e.group = std::wstring(group);
-        e.item = name;
-        e.col = index++;
-        e.row = 0;
-        e.spanCols = 1;
-        e.spanRows = 1;
-        layout.entries.push_back(std::move(e));
+void SetGroupItemOrder(Layout& layout, std::wstring_view group,
+                       const std::vector<std::wstring>& paths) {
+    GroupState* g = FindGroup(layout, group);
+    if (g == nullptr) return;
+    std::vector<GroupItem> reordered;
+    reordered.reserve(g->items.size());
+    for (const std::wstring& path : paths) {
+        const auto it = std::find_if(g->items.begin(), g->items.end(),
+                                    [&](const GroupItem& item) { return item.path == path; });
+        if (it == g->items.end()) continue;
+        reordered.push_back(*it);
+        g->items.erase(it);
     }
+    for (const GroupItem& item : g->items) reordered.push_back(item);
+    for (std::size_t i = 0; i < reordered.size(); ++i) reordered[i].order = static_cast<int>(i);
+    g->items = std::move(reordered);
 }
 
 }  // namespace tf::cfg
