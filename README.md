@@ -372,6 +372,7 @@ widget 带 `WS_EX_NOACTIVATE`，永远没焦点，系统的悬停滚动把 `WM_M
 
 - ~~**模块展开面板**（点文件夹后铺开的完整面板）还没实现~~：已实现（`src/widgets/ExpandedFolder.cpp`），点空白格子或「更多」格打开，面板内可拖动排序。
 - **原生桌面图标由 Tilefold 全面接管**（没有开关）：启动时就写 `HKCU\...\Explorer\Advanced\HideIcons=1`，再对每个 `SHELLDLL_DefView` 调一次 `ShowWindow(SW_HIDE)`，所以原生图标和 Explorer 的桌面背景右键菜单在运行期间从不出现。代价是右键菜单只能由我们弹（`shell/DesktopContextMenu.cpp`），系统的「显示桌面图标」开关在 Tilefold 跑着时也不起作用。退出时会把 `HideIcons` 写回 `0` 并恢复 `DefView`，原生桌面原样回来：接管只在运行期间生效，不会把用户的桌面留在空状态。
+- **桌面右键菜单里部分第三方二级菜单是空的**：「新建」「在终端中打开」「新建文件夹」可用，但 PowerShell 7（`ExtendedSubCommandsKey`）、「新建+」（PowerToys）、「授予访问权限」展开后为空。日志显示这些扩展在 `WM_INITMENUPOPUP` 时删掉了占位项却没有填入内容（`HandleMenuMsg2` 返回 `S_OK`）。已试过但无效：去掉 `TPM_NONOTIFY`（这一步修好了系统「新建」）、把自有项改为在 `QueryContextMenu` 之前插入并原样转发位置、放宽 `IsShellCommand` 的 id 上限。怀疑这些扩展依赖 Explorer 的 `IShellView`/站点（`IObjectWithSite`）上下文，我们用 `SHCreateDefaultContextMenu` 自建的菜单没有提供；下一步可试给菜单 `SetSite` 一个实现 `IShellBrowser`/`IShellView` 的宿主。
 - **模糊背景**是直接画半透明白玻璃，没有对壁纸做真高斯模糊。
 - **动态壁纸**（Wallpaper Engine / Spotlight）没有特殊处理。
 - ~~**拖放**只支持程序内部拖动，还不接受从资源管理器拖入文件~~：内部拖动已覆盖三种图标（组内图标 / 1×1 桌面图标 / 此电脑回收站），从资源管理器拖入仍未做。

@@ -4,6 +4,9 @@
 #include <shobjidl.h>
 #include <wrl/client.h>
 
+#include <string>
+#include <vector>
+
 #include "core/Log.h"
 
 namespace {
@@ -22,8 +25,7 @@ struct MenuHostContext {
     ComPtr<IContextMenu3> menu3;
     // 我们自己往菜单最上面插了几项。
     // shell 的 IContextMenu 是拿 WM_INITMENUPOPUP 的 LOWORD(lParam) 当「第几项」来定位
-    // 子菜单的；我们在前面插了东西、位置就整体后移了，直接转发过去它就会认错项，
-    // 结果就是「新建」「Windows PowerShell」这类子菜单点开是空的。
+    // 子菜单的；我们在前面插了东西、位置就整体后移了，直接转发过去它就会认错项。
     // 所以转发前把这几个位置减回去。
     HMENU root = nullptr;
     int prependCount = 0;
@@ -85,7 +87,7 @@ LRESULT CALLBACK MenuHostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 // 我们不是前台进程，直接 SetForegroundWindow 会失败 —— 菜单拿不到前台，
 // 后续任何鼠标消息都会把它顶掉（表现：菜单一闪就消失）。
 // 经典解法：临时把前台线程的输入队列接到自己线程上，切完再解开。
-[[maybe_unused]] void EnsureForeground(HWND hwnd) {
+void EnsureForeground(HWND hwnd) {
     if (hwnd == nullptr) return;
     if (::GetForegroundWindow() == hwnd) return;
     ::SetForegroundWindow(hwnd);
@@ -124,7 +126,51 @@ HWND CreateMenuHost(MenuHostContext* ctx) {
     return hwnd;
 }
 
-void InvokeShellVerb(IContextMenu* menu, HWND owner, UINT commandId) {
+// 用真实文件系统目录造背景菜单。
+//
+// 以前桌面背景走 SHGetDesktopFolder()->CreateViewObject：那是命名空间根（空 pidl），
+// 没有文件系统路径 —— 「新建 ▸ 文本文档」「在终端中打开」「在此处打开 PowerShell」
+// 这些扩展在 IShellExtInit 里拿到的 pidlFolder 解析不出目录，InvokeCommand 一律 E_FAIL。
+// 这里改用 SHCreateDefaultContextMenu，把桌面目录的 pidl 交给扩展，再把
+// DesktopBackground（显示设置/个性化/我们的新建收纳文件夹）和 Directory\Background
+// （新建、终端、PowerShell…）两组注册表动词都挂上。
+// 打开的 HKEY 追加进 keys，由调用方负责关闭。
+HRESULT CreateDefaultBackgroundMenu(HWND owner, const std::wstring& path, bool includeDesktopKey,
+                                    std::vector<HKEY>& keys, ComPtr<IContextMenu>& out) {
+    PIDLIST_ABSOLUTE pidl = nullptr;
+    HRESULT hr = ::SHParseDisplayName(path.c_str(), nullptr, &pidl, 0, nullptr);
+    if (FAILED(hr) || pidl == nullptr) return FAILED(hr) ? hr : E_FAIL;
+
+    ComPtr<IShellFolder> folder;
+    hr = ::SHBindToObject(nullptr, pidl, nullptr, IID_PPV_ARGS(folder.GetAddressOf()));
+    if (SUCCEEDED(hr) && folder != nullptr) {
+        auto addKey = [&keys](const wchar_t* subKey) {
+            HKEY key = nullptr;
+            if (::RegOpenKeyExW(HKEY_CLASSES_ROOT, subKey, 0, KEY_READ, &key) == ERROR_SUCCESS) {
+                keys.push_back(key);
+            }
+        };
+        if (includeDesktopKey) addKey(L"DesktopBackground");
+        addKey(L"Directory\\Background");
+
+        DEFCONTEXTMENU dcm{};
+        dcm.hwnd = owner;
+        dcm.pidlFolder = pidl;
+        dcm.psf = folder.Get();
+        dcm.cidl = 0;
+        dcm.apidl = nullptr;
+        dcm.cKeys = static_cast<UINT>(keys.size());
+        dcm.aKeys = keys.empty() ? nullptr : keys.data();
+        hr = ::SHCreateDefaultContextMenu(&dcm, IID_PPV_ARGS(out.ReleaseAndGetAddressOf()));
+    } else if (SUCCEEDED(hr)) {
+        hr = E_FAIL;
+    }
+    ::CoTaskMemFree(pidl);
+    if (SUCCEEDED(hr) && out == nullptr) hr = E_FAIL;
+    return hr;
+}
+
+void InvokeShellVerb(IContextMenu* menu, HWND owner, UINT commandId, const std::wstring& directory) {
     // CMIC_MASK_* 在旧 SDK 里没有定义（新版换成了 SEE_MASK_*），直接用数值位：
     // CMIC_MASK_UNICODE = SEE_MASK_UNICODE = 0x00004000，
     // CMIC_MASK_ASYNCOK = SEE_MASK_ASYNCOK = 0x00100000
@@ -137,6 +183,8 @@ void InvokeShellVerb(IContextMenu* menu, HWND owner, UINT commandId) {
     info.hwnd = owner;
     info.lpVerb = MAKEINTRESOURCEA(commandId - kShellCommandFirst);
     info.lpVerbW = MAKEINTRESOURCEW(commandId - kShellCommandFirst);
+    // 有些静态动词（command 里写 %V / 依赖工作目录的）要靠它知道「在哪儿」
+    if (!directory.empty()) info.lpDirectoryW = directory.c_str();
     info.nShow = SW_SHOWNORMAL;
     const HRESULT hr = menu->InvokeCommand(reinterpret_cast<LPCMINVOKECOMMANDINFO>(&info));
     if (FAILED(hr)) {
@@ -160,8 +208,21 @@ struct SystemMenu::Impl {
     // QueryContextMenu 实际发出去的最大 id（系统动词是 [1, shellLast]）
     UINT shellLast = 0;
     bool extrasStarted = false;
+    // PrependExtra/PrependSeparator 成功插到 shell 项前面的条数
+    int prependCount = 0;
+    // 背景菜单对应的文件系统目录（执行动词时作为 lpDirectory 传下去）
+    std::wstring directory;
+    // SHCreateDefaultContextMenu 用到的注册表键，菜单存活期间保持打开
+    std::vector<HKEY> keys;
 
     ~Impl() {
+        // 先放掉 shell 菜单再关键：扩展可能还引用着这些键
+        shell3.Reset();
+        shell2.Reset();
+        shell.Reset();
+        hostContext.menu2.Reset();
+        hostContext.menu3.Reset();
+        for (HKEY key : keys) ::RegCloseKey(key);
         if (host != nullptr) ::DestroyWindow(host);
         if (menu != nullptr) ::DestroyMenu(menu);
     }
@@ -252,6 +313,39 @@ bool SystemMenu::BuildBackground(HWND owner, const std::wstring& folderPath) {
     d.owner = owner;
     if (d.menu == nullptr) return false;
 
+    // 首选：用真实目录 + SHCreateDefaultContextMenu，扩展能拿到路径（见 CreateDefaultBackgroundMenu）
+    const bool isDesktop = folderPath.empty();
+    std::wstring path = folderPath;
+    if (isDesktop) {
+        PWSTR desktop = nullptr;
+        if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktop)) &&
+            desktop != nullptr) {
+            path = desktop;
+        }
+        ::CoTaskMemFree(desktop);
+    }
+    if (!path.empty()) {
+        ComPtr<IContextMenu> defMenu;
+        const HRESULT defHr = CreateDefaultBackgroundMenu(owner, path, isDesktop, d.keys, defMenu);
+        if (SUCCEEDED(defHr)) {
+            d.directory = path;
+            d.AttachShellMenu(std::move(defMenu));
+            if (d.host == nullptr) d.host = CreateMenuHost(&d.hostContext);
+            if (d.Query(static_cast<UINT>(CMF_NORMAL | CMF_EXPLORE))) return true;
+            log::Warnf(L"右键菜单：默认背景菜单 QueryContextMenu 失败 path={}，退回旧路径", path);
+            d.shell.Reset();
+            d.shell2.Reset();
+            d.shell3.Reset();
+            d.hostContext.menu2.Reset();
+            d.hostContext.menu3.Reset();
+            d.directory.clear();
+        } else {
+            log::Warnf(L"右键菜单：SHCreateDefaultContextMenu 失败 hr=0x{:08X} path={}，退回旧路径",
+                       static_cast<unsigned>(defHr), path);
+        }
+    }
+
+    // 兜底：旧路径（桌面根时扩展拿不到目录，「新建」「终端」可能用不了，但至少菜单能弹）
     ComPtr<IShellFolder> folder;
     HRESULT hr = S_OK;
     if (folderPath.empty()) {
@@ -341,6 +435,8 @@ void SystemMenu::PrependExtra(const std::wstring& label, UINT id, UINT position)
     if (position > static_cast<UINT>(count < 0 ? 0 : count)) position = static_cast<UINT>(count < 0 ? 0 : count);
     if (!::InsertMenuItemW(d.menu, position, TRUE, &item)) {
         log::Warnf(L"右键菜单：InsertMenuItem 失败 position={} err={}", position, ::GetLastError());
+    } else {
+        ++d.prependCount;
     }
 }
 
@@ -355,6 +451,8 @@ void SystemMenu::PrependSeparator(UINT position) {
     if (position > static_cast<UINT>(count < 0 ? 0 : count)) position = static_cast<UINT>(count < 0 ? 0 : count);
     if (!::InsertMenuItemW(d.menu, position, TRUE, &item)) {
         log::Warnf(L"右键菜单：插入分隔线失败 position={} err={}", position, ::GetLastError());
+    } else {
+        ++d.prependCount;
     }
 }
 
@@ -364,23 +462,20 @@ UINT SystemMenu::Track(POINT screenPt) {
     if (::GetMenuItemCount(d.menu) <= 0) return 0;
 
     const HWND popupOwner = d.PopupOwner();
-    // 算出「我们自己插在最前面几项」的数量：第一个 id 落在 shell 段的就是 shell 的第一项。
-    // 菜单有时序性（用户可能先 Build 再追加再插队），所以放到临弹之前数。
-    int prepend = 0;
-    const int count = ::GetMenuItemCount(d.menu);
-    for (int i = 0; i < count; ++i) {
-        const UINT id = ::GetMenuItemID(d.menu, i);
-        if (id != static_cast<UINT>(-1) && id >= kShellCommandFirst && id <= d.shellLast) {
-            prepend = i;
-            break;
-        }
-    }
-    d.hostContext.prependCount = prepend;
-    if (popupOwner != nullptr) {
-        ::SetForegroundWindow(popupOwner);
-    }
+    // 「我们自己插在最前面几项」由 PrependExtra/PrependSeparator 记账。
+    // 以前是扫第一个 id 落在 shell 段的项来推算，但子菜单项（新建、查看…）的
+    // GetMenuItemID 是 -1、分隔线是 0，会被跳过 —— 数多了，前面的子菜单就被
+    // MenuHostProc 当成我们自己的项拦下，shell 永远收不到初始化，弹出来是空的。
+    d.hostContext.prependCount = d.prependCount;
+    // 菜单的 owner 必须是前台窗口，TrackPopupMenu 才会在用户切走焦点时自动收起。
+    // 桌面背景右键那一下被低级鼠标钩子吞掉了，我们进程不算「最后收到输入」，
+    // 单纯 SetForegroundWindow 时灵时不灵（取决于当时前台是谁）—— 这就是
+    // 「有时切窗口菜单会自动消失、有时不会」的原因。所以走 AttachThreadInput 那套。
+    EnsureForeground(popupOwner);
+    // 不能加 TPM_NONOTIFY：它会连 WM_INITMENUPOPUP 一起掐掉，「新建」这类
+    // 延迟填充的二级菜单就永远是空的。TPM_RETURNCMD 已经保证不会发 WM_COMMAND。
     const UINT command = ::TrackPopupMenuEx(
-        d.menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN, screenPt.x,
+        d.menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, screenPt.x,
         screenPt.y, popupOwner, nullptr);
     if (popupOwner != nullptr) ::PostMessageW(popupOwner, WM_NULL, 0, 0);
     return command;
@@ -394,7 +489,7 @@ bool SystemMenu::Invoke(UINT commandId) {
     Impl& d = *impl_;
     if (!IsShellCommand(commandId) || d.shell == nullptr) return false;
     log::Infof(L"右键菜单：执行系统动词 id={}", commandId);
-    InvokeShellVerb(d.shell.Get(), d.PopupOwner(), commandId);
+    InvokeShellVerb(d.shell.Get(), d.PopupOwner(), commandId, d.directory);
     return true;
 }
 
