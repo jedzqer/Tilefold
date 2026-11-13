@@ -12,7 +12,7 @@
 
 // 由 CMakeLists.txt 定义；没定义时（比如单元测试目标）退回一个占位版本号。
 #ifndef TILEFOLD_DISPLAY_VERSION
-#define TILEFOLD_DISPLAY_VERSION L"1.0.0"
+#define TILEFOLD_DISPLAY_VERSION L"1.0.1"
 #endif
 
 namespace {

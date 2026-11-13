@@ -93,8 +93,8 @@ ctest --test-dir build -C Debug --output-on-failure
 `build-release\Tilefold-<版本>-windows-<架构>.zip` 便携包和同名 `.msi` 安装程序，并输出两者的 SHA256。
 打包需要 WiX Toolset 3；脚本检测到缺失时会弹出 UAC 窗口安装。最终用户无需安装 WiX。
 对外显示的名字取自 `TILEFOLD_RELEASE_TAG`（`CMakeLists.txt` 里默认 `-beta`，正式版置空），
-所以当前产物是 `Tilefold-1.0.0-beta-windows-x64.zip` / `.msi`；MSI 的 ProductVersion
-仍是纯数字 `1.0.0`（WiX 不接受字母）。设置窗标题会显示完整版本号。
+所以当前产物是 `Tilefold-1.0.1-beta-windows-x64.zip` / `.msi`；MSI 的 ProductVersion
+仍是纯数字 `1.0.1`（WiX 不接受字母）。设置窗标题会显示完整版本号。
 便携构建仍支持 CMake 3.20+；生成 per-user MSI 需 CMake 4.3+。
 默认 x64；ARM64 需安装对应 MSVC 工具链，再传 `-Architecture ARM64 -BuildDirectory build-release-arm64`。
 MSVC 运行库静态链接，使用者无需安装 Visual C++ Redistributable；其余依赖均为 Windows 系统 DLL。
@@ -142,7 +142,7 @@ MSI 按当前用户安装到 LocalAppData，不需要管理员权限；首次启
 怎么定位这个「项目根」：从 exe 所在目录往上找带 `CMakeLists.txt` 的目录
 （所以 `build\Debug\Tilefold.exe` 会把数据写回项目根，清空 `build\` 不会丢数据）；
 单独把 exe 拷到别处时找不到 `CMakeLists.txt`，就要看它在哪：
-MSI 安装时会写 `HKCU\Software\Tilefold\Installer\InstallLocation`（默认 `%LOCALAPPDATA%\Tilefold 1.0.0-beta`），
+MSI 安装时会写 `HKCU\Software\Tilefold\Installer\InstallLocation`（默认 `%LOCALAPPDATA%\Tilefold 1.0.1-beta`），
 exe 在这个目录下、或者落在 Program Files / `%LOCALAPPDATA%\Programs` 里，就算安装版，
 数据走 `%LOCALAPPDATA%\Tilefold`（卸载和升级会删安装目录，不能把布局放在里面）；
 其他位置当便携版，数据就放在 exe 旁边。

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Tilefold VERSION 1.0.0 LANGUAGES CXX RC)
+project(Tilefold VERSION 1.0.1 LANGUAGES CXX RC)
 
 # 发布标签：beta / rc1 / 留空 = 正式版。
 # 只影响对外显示的名字与安装包文件名；WiX 的 ProductVersion 必须是纯数字 x.y.z，
