@@ -1039,14 +1039,29 @@ void App::OnIconReturn(widget::SingleIconWidget* icon) {
 
 bool App::HandleWheelAt(POINT screenPx, float notches) {
     if (notches == 0.0f) return false;
+    // 光标下面真正是哪个窗口。文件夹是贴在桌面上的普通窗口，被浏览器/编辑器盖住时
+    // 它的矩形照样命中 —— 只比矩形的话，在别的程序里滚动就会把背后看不见的文件夹
+    // 翻页（顺带还把人家那次滚动吃掉了）。所以必须先查 z 序。
+    const HWND underCursor = ::WindowFromPoint(screenPx);
     // 放大面板是能激活的窗口，滚轮走正常路径（WM_MOUSEWHEEL），不在这里处理
+    bool rectHit = false;
     for (const auto& f : folders_) {
-        if (f == nullptr) continue;
+        if (f == nullptr || f->Hwnd() == nullptr) continue;
         RECT r{};
         if (!::GetWindowRect(f->Hwnd(), &r)) continue;  // Include the actual label band.
-        if (screenPx.x >= r.left && screenPx.x < r.right && screenPx.y >= r.top && screenPx.y < r.bottom) {
-            return f->OnWheel(notches);
+        if (screenPx.x < r.left || screenPx.x >= r.right || screenPx.y < r.top ||
+            screenPx.y >= r.bottom) {
+            continue;
         }
+        rectHit = true;
+        // 命中的必须是这个文件夹窗口自己：不是的话说明光标其实在别的窗口上
+        // （别的程序盖在上面，或者压着另一个叠在一起的 Tilefold 部件），
+        // 这一次滚轮不归它 —— 继续看下一个，叠放时上面那个才是目标。
+        if (underCursor != f->Hwnd()) continue;
+        return f->OnWheel(notches);
+    }
+    if (rectHit) {
+        tf::log::Debugf(L"[滚轮] 光标在文件夹矩形内但不在文件夹窗口上（被别的窗口盖住），放行");
     }
     return false;
 }

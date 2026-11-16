@@ -230,6 +230,15 @@ void WidgetWindow::RequestAnimation() {
     FrameClock::Get().Subscribe(hwnd_);
 }
 
+void WidgetWindow::EnsureLeaveTracking() {
+    if (hwnd_ == nullptr || !::IsWindow(hwnd_) || trackingLeave_) return;
+    TRACKMOUSEEVENT tme{};
+    tme.cbSize = sizeof(tme);
+    tme.dwFlags = TME_LEAVE;
+    tme.hwndTrack = hwnd_;
+    trackingLeave_ = ::TrackMouseEvent(&tme) != FALSE;
+}
+
 void WidgetWindow::Invalidate() {
     if (hwnd_ != nullptr && ::IsWindow(hwnd_)) {
         ::InvalidateRect(hwnd_, nullptr, FALSE);

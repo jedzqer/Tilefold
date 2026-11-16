@@ -295,6 +295,10 @@ void BigFolderWidget::ResetScroll() {
 
 bool BigFolderWidget::OnWheel(float notches) {
     if (MaxFirst() <= 0) return false;
+    // 滚轮是低级钩子送过来的，可能一路没触发过 WM_MOUSEMOVE（光标一开始就停在那儿），
+    // 那样窗口从没登记过 WM_MOUSELEAVE，翻页之后就不会有人把它翻回去。
+    // 这里主动补一次登记：光标一离开就一定收到“回顶”的通知。
+    if (window_) window_->EnsureLeaveTracking();
     // 触控板会送来很多零点几格：攒够一格才翻一页；换方向就清零重攒
     if ((wheelAccum_ > 0.0f && notches < 0.0f) || (wheelAccum_ < 0.0f && notches > 0.0f)) {
         wheelAccum_ = 0.0f;

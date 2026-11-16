@@ -79,6 +79,12 @@ public:
     // 请求开启动画帧（幂等：已经在跑就什么都不做）
     void RequestAnimation();
 
+    // 主动登记一次 WM_MOUSELEAVE。
+    // 平常是收到 WM_MOUSEMOVE 才登记的，而“移出窗口”是滚轮翻页回顶的唯一触发点：
+    // 光标可能一直停在窗口上、从没产生过 WM_MOUSEMOVE（翻页是应用级钩子送来的），
+    // 那样翻页后永远收不到 WM_MOUSELEAVE。每次翻页调一下，保证离开一定有通知。
+    void EnsureLeaveTracking();
+
     // 放大面板模式：窗口可被激活（要收键盘）、不再强行贴住桌面宿主（要压在普通窗口之上）。
     // 必须在 Show() 之前设置。
     void SetPanelMode(bool on) { panelMode_ = on; }
